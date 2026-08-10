@@ -70,7 +70,7 @@ resource "google_project_iam_audit_config" "this" {
 # subnets from the host rather than owning networks, so network policy is set
 # once and inherited rather than re-argued per project.
 resource "google_compute_shared_vpc_service_project" "this" {
-  count = var.shared_vpc_host_project == "" ? 0 : 1
+  count = var.attach_shared_vpc ? 1 : 0
 
   host_project    = var.shared_vpc_host_project
   service_project = google_project.this.project_id

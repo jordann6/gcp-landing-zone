@@ -88,6 +88,24 @@ variable "enable_scc_notifications" {
   default     = true
 }
 
+variable "vend_nonprod_app" {
+  description = <<-EOT
+    Vend the nonprod workload project.
+
+    Exists because a self-serve billing account caps how many projects can be
+    linked to it at once, and this landing zone needs four (seed, network,
+    logging, and a workload) before it needs a fifth. Projects in
+    DELETE_REQUESTED still count against the cap for 30 days, so the ceiling is
+    reached sooner than a project list suggests.
+
+    The nonprod *folder* and its policy override exist either way, and an
+    effective-policy query against the folder proves inheritance without a
+    project sitting in it.
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "subnet_cidr" {
   description = "Primary range for the workload subnet."
   type        = string

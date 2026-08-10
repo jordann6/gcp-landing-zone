@@ -16,6 +16,7 @@ locals {
     "bigquery.googleapis.com",
     "billingbudgets.googleapis.com",
     "cloudbilling.googleapis.com",
+    "cloudkms.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "compute.googleapis.com",
     "iam.googleapis.com",

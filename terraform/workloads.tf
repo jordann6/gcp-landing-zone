@@ -7,6 +7,7 @@
 
 module "nonprod_app" {
   source = "./modules/project-factory"
+  count  = var.vend_nonprod_app ? 1 : 0
 
   name            = "app-nonprod"
   name_prefix     = var.name_prefix
@@ -15,6 +16,7 @@ module "nonprod_app" {
   environment     = "nonprod"
   labels          = var.labels
 
+  attach_shared_vpc       = true
   shared_vpc_host_project = google_compute_shared_vpc_host_project.host.project
 
   apis = [
@@ -34,6 +36,7 @@ module "prod_app" {
   environment     = "prod"
   labels          = var.labels
 
+  attach_shared_vpc       = true
   shared_vpc_host_project = google_compute_shared_vpc_host_project.host.project
 
   apis = [
@@ -47,9 +50,11 @@ module "prod_app" {
 # team can use this subnet and nothing else, which is the least-privilege form
 # of Shared VPC and the reason to prefer it over granting network roles broadly.
 resource "google_compute_subnetwork_iam_member" "nonprod_subnet_user" {
+  count = var.vend_nonprod_app ? 1 : 0
+
   project    = module.network_project.project_id
   region     = google_compute_subnetwork.workload.region
   subnetwork = google_compute_subnetwork.workload.name
   role       = "roles/compute.networkUser"
-  member     = "serviceAccount:${module.nonprod_app.project_number}-compute@developer.gserviceaccount.com"
+  member     = "serviceAccount:${module.nonprod_app[0].project_number}-compute@developer.gserviceaccount.com"
 }
