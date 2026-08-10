@@ -61,10 +61,14 @@ Requires an org, an open billing account, and these roles. Three of the four are
 | Role | Needed for |
 |---|---|
 | `resourcemanager.organizationAdmin` | Org IAM |
-| `resourcemanager.folderAdmin` | Creating and deleting folders. **Not** included in `organizationAdmin` |
-| `orgpolicy.policyAdmin` | The constraints. Also **not** in `organizationAdmin` |
-| `securitycenter.notificationConfigEditor` | The SCC notification config. Set `enable_scc_notifications = false` to skip |
+| `resourcemanager.folderAdmin` | Creating and deleting folders. **Not** in `organizationAdmin` |
+| `orgpolicy.policyAdmin` | The constraints. **Not** in `organizationAdmin` |
+| `compute.xpnAdmin` | Enabling the Shared VPC host. **Not** in `organizationAdmin` |
+| `logging.configWriter` | Creating the organization sink. **Not** in `organizationAdmin` |
 | `billing.admin` | Linking billing and creating the budget |
+| `securitycenter.notificationConfigEditor` | The SCC notification config. Was **not sufficient** on its own here, see below |
+
+The pattern is worth internalizing: `organizationAdmin` administers IAM policy at the organization and grants almost none of the operational org-level permissions. Four separate roles had to be added, each discovered by an apply failing on exactly one resource.
 
 ```bash
 # 1. Seed project and state bucket. Local state, because this creates the bucket.
@@ -110,17 +114,40 @@ gcloud compute shared-vpc get-host-project "${NONPROD_PROJECT}"
 Three checks that prove a control by failing:
 
 ```bash
-# A default network cannot be created.
-gcloud compute networks create default --project="${NONPROD_PROJECT}"
-
 # A service account key cannot be issued.
 gcloud iam service-accounts keys create /tmp/k.json --iam-account="${SA}"
+# ERROR: FAILED_PRECONDITION ... constraints/iam.disableServiceAccountKeyCreation
 
 # A resource outside approved locations is refused.
-gcloud storage buckets create gs://test-asia --location=asia-northeast1 --project="${NONPROD_PROJECT}"
+gcloud storage buckets create gs://test-asia --location=asia-northeast1 --project="${PROD_PROJECT}"
+# ERROR: HTTPError 412: 'asia-northeast1' violates constraint 'constraints/gcp.resourceLocations'
 ```
 
-Each should be denied with the violated constraint named. Note that gcloud creates the key output file before calling the API, so check its size rather than its presence.
+Both are denied with the violated constraint named. Note that gcloud creates the key output file before calling the API, so check its size rather than its presence.
+
+**A test that does not work, and why it is worth knowing.** The obvious third check is to create a network named `default` and expect a denial. It succeeds, and the constraint is not broken.
+
+`compute.skipDefaultNetworkCreation` suppresses the default VPC that GCP would otherwise create *at project creation time*. It says nothing about networks created afterwards, and nothing about the name `default`. A user with network permissions can create a VPC called `default` any time, and it is an ordinary custom-mode network that happens to carry that name, without the permissive preset firewall rules the real default VPC ships with.
+
+The control is about the project's starting state, not about a reserved name. Verify it by confirming a freshly vended project has zero networks:
+
+```bash
+gcloud compute networks list --project="${PROD_PROJECT}"   # Listed 0 items.
+```
+
+## What the live deploy taught
+
+Five things that only surfaced against a real organization.
+
+**A new GCP organization is not greenfield.** Google now pre-applies a secure-by-default org policy set, so three constraints this repo declares already existed: `iam.disableServiceAccountKeyCreation`, `iam.disableServiceAccountKeyUpload`, and `storage.uniformBucketLevelAccess`. The apply failed with `409 POLICY_ALREADY_EXISTS` on each. The fix is to import them, which is the correct instinct and carries a trap described in the teardown section below.
+
+**Billing accounts cap linked projects.** A self-serve billing account allows a limited number of projects linked at once, and projects sitting in `DELETE_REQUESTED` still count for their full 30-day window. This landing zone wants five projects and the cap was reached at four, which is why `vend_nonprod_app` exists. The nonprod folder and its policy override work regardless, and an effective-policy query proves inheritance without a project inside the folder.
+
+**A resource count must be knowable at plan time.** The service project attachment originally used `count = var.shared_vpc_host_project == "" ? 0 : 1`, and the host project ID is generated in the same apply. Terraform refuses: the count value depends on attributes that cannot be determined until apply. A resource's *arguments* may be unknown at plan time; its *count* may not. Hence a separate `attach_shared_vpc` boolean.
+
+**Security Command Center needs more than the notification role.** `securitycenter.notificationConfigEditor` at the organization was not sufficient to create a notification config, which continued to fail with `securitycenter.notificationconfig.create` denied. SCC activation state at the org appears to be the gate. `enable_scc_notifications` defaults to true and was set false for the verified run, so the Pub/Sub topics exist and the SCC config does not.
+
+**`skipDefaultNetworkCreation` does not mean what the name suggests.** See the validation section. It governs the project's starting state, not the name `default`.
 
 ## What changes at production scale
 
@@ -145,7 +172,19 @@ cd ../bootstrap && terraform destroy   # set force_destroy_state = true first
 
 GCP behaviors that make this non-obvious:
 
-**Org policies are deleted, not reverted.** Destroy removes the policy resources, and the org returns to Google's defaults, which are permissive. There is no "previous state" to restore.
+**Importing a policy makes you its owner, and destroy then deletes it.** This is the sharpest trap in the whole build and it was hit for real. The three constraints Google pre-applied were imported to resolve the 409s, which handed Terraform ownership of policies it did not create. `terraform destroy` deleted them, leaving the organization *less protected than before the landing zone was ever applied*, with service account key creation newly permitted org-wide.
+
+They were restored manually afterwards:
+
+```bash
+for c in iam.disableServiceAccountKeyCreation iam.disableServiceAccountKeyUpload storage.uniformBucketLevelAccess; do
+  gcloud resource-manager org-policies enable-enforce "$c" --organization="${ORG_ID}"
+done
+```
+
+Adopting existing infrastructure is a two-way door only if you know which side you came in on. A production version tracks which constraints pre-existed and either leaves them unmanaged or guards them with `prevent_destroy`.
+
+**Org policies are deleted, not reverted.** Destroy removes the policy resources and the org returns to Google's defaults for anything Google set, and to no policy at all for anything it did not. There is no "previous state" that Terraform restores for you.
 
 **Folders must be empty.** A folder with a project in it, including one in `DELETE_REQUESTED`, blocks deletion. Terraform's dependency order handles this, but a manually created project in a managed folder will strand the destroy.
 
@@ -154,3 +193,20 @@ GCP behaviors that make this non-obvious:
 **Deleted projects linger for 30 days** in `DELETE_REQUESTED` and their IDs are never reusable. They still appear in `gcloud projects list`, which looks like a failed teardown and is not one. Confirm lifecycle state and the billing link rather than absence of the row.
 
 **The log sink is org-level.** It is not deleted by deleting a project. Terraform removes it, but a partial destroy can leave an org sink writing to a dataset that no longer exists, which fails silently.
+
+## Deploy record
+
+Deployed, verified, and destroyed on 2026-08-10 against organization `jordandn13-org`.
+
+| Step | Result |
+|---|---|
+| Bootstrap | Seed project, state bucket, log bucket, audit config |
+| Landing zone | 52 resources: 4 folders, 9 org policy constraints, 3 vended projects, Shared VPC with 2 firewall rules, org sink, BigQuery dataset, CMEK key, 2 Pub/Sub topics, budget |
+| Inheritance proven | `prod` resolves `gcp.resourceLocations` to US value groups only; `nonprod` resolves to US plus europe and EU, from a child policy widening the inherited one |
+| Shared VPC | `gcloud compute shared-vpc get-host-project` on the workload project returns the host project |
+| Org sink | Delivering to BigQuery with `includeChildren = True` |
+| Key creation denied | `FAILED_PRECONDITION`, `constraints/iam.disableServiceAccountKeyCreation` |
+| Out-of-region denied | `HTTPError 412: 'asia-northeast1' violates constraint 'constraints/gcp.resourceLocations'` |
+| Not deployed | SCC notification config, blocked on org permissions beyond `notificationConfigEditor` |
+| Teardown | 52 then 18 resources destroyed. Zero folders remain, seed project `DELETE_REQUESTED` with billing unlinked, three pre-existing org policies restored by hand |
+| Cost | Under $0.20 for the full cycle |

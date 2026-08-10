@@ -21,7 +21,7 @@ output "logging_project_id" {
 output "workload_projects" {
   description = "Projects vended through the factory, by environment."
   value = {
-    nonprod = module.nonprod_app.project_id
+    nonprod = one(module.nonprod_app[*].project_id)
     prod    = module.prod_app.project_id
   }
 }
