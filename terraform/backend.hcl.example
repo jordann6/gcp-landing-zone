@@ -1,0 +1,5 @@
+# Copy from the bootstrap layer's backend_hcl output, then:
+#   terraform init -backend-config=backend.hcl
+
+bucket = "jn-lz-seed-a1b2c3-tfstate"
+prefix = "landing-zone/dev"

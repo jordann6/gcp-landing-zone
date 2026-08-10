@@ -1,0 +1,20 @@
+# Copy to terraform.tfvars and fill in. Gitignored.
+
+org_id          = "000000000000"
+billing_account = "000000-000000-000000"
+
+# From the bootstrap layer output.
+seed_project_id = "jn-lz-seed-a1b2c3"
+
+# Only needed when enable_domain_restricted_sharing is true.
+# gcloud organizations describe <org_id> --format='value(owner.directoryCustomerId)'
+# customer_id = "C0xxxxxxx"
+
+# Off by default: this constraint blocks binding allUsers, which breaks any
+# public Cloud Run service.
+enable_domain_restricted_sharing = false
+
+# Requires roles/securitycenter.notificationConfigEditor at the organization.
+enable_scc_notifications = true
+
+monthly_budget_usd = 25
