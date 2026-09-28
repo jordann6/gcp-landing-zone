@@ -15,40 +15,37 @@ on:
 # One static job per Terraform root, as in the AWS repo (governance, network,
 # workload), plus bootstrap.
 #
-# Policy: the shared conftest suite gained its GCP rules in
-# platform-guardrails#2. Until that merges, the shared suite is AWS-shaped and
-# its module-tagging rule fails any GCP repo that uses modules, so the shared
-# policy job stays skipped and this repo's own rules run in `repo_policy` below.
-# ACTIVATE after platform-guardrails#2 merges and v1.4.0 is tagged:
-#   1. bump every pin in this file to v1.4.0
-#   2. set skip_policy: false (the shared job then runs shared + policy/ rules)
+# Policy: the shared conftest suite carries GCP rules as of v1.4.0
+# (platform-guardrails#2), so each root's shared job runs them alongside this
+# repo's policy/ rules. repo_policy below also runs the repo rules on their own
+# and proves the violations fixture still fails.
 permissions:
   contents: read
 
 jobs:
   static_bootstrap:
-    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.3.0
+    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.4.0
     with:
       terraform_dir: bootstrap
-      skip_policy: true
+      skip_policy: false
 
   static:
-    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.3.0
+    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.4.0
     with:
       terraform_dir: terraform
-      skip_policy: true
+      skip_policy: false
 
   static_network:
-    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.3.0
+    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.4.0
     with:
       terraform_dir: network
-      skip_policy: true
+      skip_policy: false
 
   static_workload:
-    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.3.0
+    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.4.0
     with:
       terraform_dir: workload
-      skip_policy: true
+      skip_policy: false
 
   # This repo's own rules (policy/gcp_lz.rego) over every root, and the guard on
   # the guard: the violations fixture must FAIL, or the rules have gone vacuous.
