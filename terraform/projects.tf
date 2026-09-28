@@ -52,6 +52,7 @@ locals {
 
   app_apis = [
     "artifactregistry.googleapis.com",
+    "backupdr.googleapis.com",
     "binaryauthorization.googleapis.com",
     "cloudkms.googleapis.com",
     "cloudresourcemanager.googleapis.com",

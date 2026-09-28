@@ -92,9 +92,11 @@ imported them, which made Terraform their owner, and `terraform destroy` then
 deleted them. `make test` asserts they are still enforced instead.
 
 **Custom constraints.** CEL rules, enforced at the org: GKE clusters must use
-private nodes, and GKE clusters and Cloud SQL instances must carry a
-`cost_center` label. Spend that cannot be allocated is rejected at creation.
-This is GCP's tag enforcement, and it is stronger than a report.
+private nodes and carry a `cost_center` label, and Cloud SQL instances must not
+have a public IP. Spend that cannot be allocated is rejected at creation. This
+is GCP's tag enforcement, and it is stronger than a report. Cloud SQL does not
+expose its labels to custom constraints, so the SQL `cost_center` label is
+held one step earlier, by the conftest rule in `policy/gcp_lz.rego`.
 
 **Identity.** Workforce Identity Federation to an external OIDC IdP, seven
 personas bound to IdP groups at folder scope, no standing prod write, and two
@@ -121,7 +123,10 @@ egress rule, and you are not, which is what `make test` proves.
 **Logging and detection.** Two org sinks with `include_children`: a CMEK
 BigQuery dataset for long-form audit queries, and a Log Analytics bucket that
 the alert metrics count against (org IAM, org policy, VPC-SC, firewall policy,
-break-glass use, and CIS 2.4 to 2.11). SCC Standard streams findings to Pub/Sub.
+break-glass use, and CIS 2.4 to 2.11). SCC findings stream to Pub/Sub once
+Security Command Center is activated for the org; activation itself is a
+one-time console step with no API, so the stream is gated by
+`enable_scc_notifications` and was off in the recorded deploy.
 Budgets on the billing account and, separately, the sandbox.
 
 **Paved road.** A private zonal GKE cluster (DNS endpoint for operators, no IP

@@ -133,6 +133,26 @@ deny contains msg if {
 	msg := sprintf("%s: google_sql_database_instance.%s allows unencrypted connections.", [r.path, r.name])
 }
 
+# Cloud SQL labels are invisible to custom org policy constraints, so this is
+# the only gate on them. A reference (local.labels) cannot be resolved here and
+# passes; a literal map must carry cost_center.
+deny contains msg if {
+	some r in resources
+	r.type == "google_sql_database_instance"
+	some st in blocks_of(r.body.settings)
+	not st.user_labels
+	msg := sprintf("%s: google_sql_database_instance.%s sets no user_labels, so its spend has no cost_center.", [r.path, r.name])
+}
+
+deny contains msg if {
+	some r in resources
+	r.type == "google_sql_database_instance"
+	some st in blocks_of(r.body.settings)
+	is_object(st.user_labels)
+	not st.user_labels.cost_center
+	msg := sprintf("%s: google_sql_database_instance.%s user_labels has no cost_center.", [r.path, r.name])
+}
+
 deny contains msg if {
 	some r in resources
 	r.type == "google_secret_manager_secret"

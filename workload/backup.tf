@@ -44,9 +44,10 @@ resource "google_backup_dr_backup_plan" "sql" {
       hourly_frequency = 0
       time_zone        = "UTC"
 
+      # Backup and DR rejects a daily window shorter than 6 hours.
       backup_window {
-        start_hour_of_day = 3
-        end_hour_of_day   = 7
+        start_hour_of_day = 2
+        end_hour_of_day   = 8
       }
     }
   }

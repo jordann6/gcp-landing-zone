@@ -35,8 +35,8 @@ resource "google_sql_database_instance" "primary" {
     disk_size         = 10
     disk_autoresize   = true
 
-    # Set explicitly: custom.sqlRequireCostCenterLabel reads userLabels on the
-    # create request.
+    # Set explicitly: Cloud SQL labels are not visible to custom constraints, so
+    # the review-time OPA rule is what holds cost_center here.
     user_labels = local.labels
 
     ip_configuration {

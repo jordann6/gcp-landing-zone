@@ -102,7 +102,9 @@ resource "google_monitoring_notification_channel" "email" {
 }
 
 resource "google_monitoring_alert_policy" "log" {
-  for_each = google_logging_metric.alert
+  # Keyed on the static map, not on google_logging_metric.alert: a resource
+  # object's keys are unknown during import and a partial apply.
+  for_each = local.log_alerts
 
   project      = module.logging_project.project_id
   display_name = each.key
@@ -112,10 +114,11 @@ resource "google_monitoring_alert_policy" "log" {
     display_name = each.value.description
 
     condition_threshold {
-      # No resource.type clause: a log-based metric is reported against the
-      # monitored resource of each matching entry (a folder, a project, a
-      # bucket), so pinning one type would silently drop the rest.
-      filter          = "metric.type = \"logging.googleapis.com/user/${each.value.name}\""
+      # Monitoring requires a resource.type clause. These metrics are scoped
+      # to the org-audit log bucket, and a bucket-scoped metric reports every
+      # matching entry against the bucket itself (logging_bucket), whatever
+      # the entry's own resource was, so this type drops nothing.
+      filter          = "metric.type = \"logging.googleapis.com/user/${google_logging_metric.alert[each.key].name}\" AND resource.type = \"logging_bucket\""
       comparison      = "COMPARISON_GT"
       threshold_value = 0
       duration        = "0s"

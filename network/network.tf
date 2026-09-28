@@ -21,7 +21,13 @@
 # 10.3.32.0/19) are the ones in the design doc, identical to EKS and AKS.
 
 locals {
-  gov = data.terraform_remote_state.governance.outputs
+  # Remote state drops null outputs, so the optional projects (hub, sandbox)
+  # are absent rather than null when the vend set leaves them out. The
+  # defaults put them back as null for the checks below.
+  gov = merge(
+    { hub_project_id = null, sandbox_project_id = null },
+    data.terraform_remote_state.governance.outputs,
+  )
 
   env_octet = { hub = 0, dev = 1, test = 2, prod = 3, sandbox = 4 }
 

@@ -31,10 +31,17 @@ resource "google_secret_manager_secret_iam_member" "db_password" {
   secret_id = google_secret_manager_secret.db_password.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = each.value
+
+  # The project's workload identity pool is created by the first cluster that
+  # enables Workload Identity; IAM rejects a principal in a pool that does not
+  # exist yet.
+  depends_on = [google_container_cluster.paved_road]
 }
 
 resource "google_project_iam_member" "app_sql_client" {
   project = local.project
   role    = "roles/cloudsql.client"
   member  = local.wi_principals["app"]
+
+  depends_on = [google_container_cluster.paved_road]
 }

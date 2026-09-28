@@ -32,6 +32,15 @@ locals {
   admin_identities = ["serviceAccount:${var.terraform_service_account}"]
 }
 
+# Every root bills its calls to the seed project (billing_project +
+# user_project_override), so a call sa-terraform makes into the perimeter also
+# touches the seed, which sits outside it, for quota. VPC-SC sees that as the
+# request leaving the perimeter. The terraform-quota egress rule admits exactly
+# that: sa-terraform, to the seed project, on the restricted services.
+data "google_project" "seed" {
+  project_id = var.seed_project_id
+}
+
 resource "google_access_context_manager_access_policy" "org" {
   count = local.create_policy ? 1 : 0
 
@@ -66,6 +75,25 @@ resource "google_access_context_manager_service_perimeter" "restricted" {
         }
         ingress_to {
           resources = ["*"]
+          dynamic "operations" {
+            for_each = var.restricted_services
+            content {
+              service_name = operations.value
+              method_selectors {
+                method = "*"
+              }
+            }
+          }
+        }
+      }
+
+      egress_policies {
+        title = "terraform-quota"
+        egress_from {
+          identities = local.admin_identities
+        }
+        egress_to {
+          resources = ["projects/${data.google_project.seed.number}"]
           dynamic "operations" {
             for_each = var.restricted_services
             content {
@@ -118,6 +146,25 @@ resource "google_access_context_manager_service_perimeter" "restricted" {
         }
         ingress_to {
           resources = ["*"]
+          dynamic "operations" {
+            for_each = var.restricted_services
+            content {
+              service_name = operations.value
+              method_selectors {
+                method = "*"
+              }
+            }
+          }
+        }
+      }
+
+      egress_policies {
+        title = "terraform-quota"
+        egress_from {
+          identities = local.admin_identities
+        }
+        egress_to {
+          resources = ["projects/${data.google_project.seed.number}"]
           dynamic "operations" {
             for_each = var.restricted_services
             content {

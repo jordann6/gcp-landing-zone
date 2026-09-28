@@ -156,9 +156,11 @@ resource "google_compute_network_firewall_policy_rule" "allow_internal_egress" {
   project         = each.value.project
   firewall_policy = google_compute_network_firewall_policy.vpc[each.key].name
   rule_name       = "allow-internal-egress"
-  priority        = 1000
-  direction       = "EGRESS"
-  action          = "allow"
+  # Priorities are unique per policy across both directions, so this cannot
+  # share 1000 with allow-internal-ingress.
+  priority  = 1001
+  direction = "EGRESS"
+  action    = "allow"
 
   match {
     # own_range already contains the PSA range on the restricted tier.

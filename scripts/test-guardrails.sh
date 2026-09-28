@@ -35,8 +35,12 @@ PROBE_SA="$(gcloud iam service-accounts list --project="$LOGGING" "$IMP" --forma
 if [ -z "$PROBE_SA" ]; then
 	PROBE_SA="$SA"
 fi
+# gcloud chmods its output file, so the key path must be a real file, not
+# /dev/null. The denial means nothing is ever written; the dir is removed anyway.
+KEYDIR="$(mktemp -d)"
 expect_denied "service account key creation" "disableServiceAccountKeyCreation" \
-	gcloud iam service-accounts keys create /dev/null --iam-account="$PROBE_SA" "$IMP"
+	gcloud iam service-accounts keys create "$KEYDIR/key.json" --iam-account="$PROBE_SA" "$IMP"
+rm -rf "$KEYDIR"
 
 expect_denied "bucket outside approved locations" "resourceLocations" \
 	gcloud storage buckets create "gs://lz-test-asia-${STAMP}" --location=asia-northeast1 --project="$LOGGING" "$IMP"
@@ -53,7 +57,8 @@ fi
 section "Inheritance: identical request, different outcome by placement"
 
 if [ -n "$APP_PROD" ]; then
-	expect_denied "prod: bucket without CMEK" "restrictNonCmekServices" \
+	# GCS words this denial without the constraint name.
+	expect_denied "prod: bucket without CMEK" "restrictNonCmekServices|customer-managed encryption key \\(CMEK\\) on the bucket is required by an org policy" \
 		gcloud storage buckets create "gs://lz-test-nocmek-prod-${STAMP}" --location="$REGION" --project="$APP_PROD" "$IMP"
 else
 	skip "prod CMEK requirement (app-prod not vended)"
@@ -102,9 +107,11 @@ ENT="$(gcloud pam entitlements list --location=global --folder="${PROD_FOLDER#fo
 [ "${ENT:-0}" -ge 1 ] && ok "PAM prod-write entitlement exists on the prod folder" || skip "PAM entitlement not found (enable_pam or gcloud pam unavailable)"
 
 section "Logging"
-ROWS="$(bq --project_id="$LOGGING" query --use_legacy_sql=false --format=csv "$IMP" \
+# bq does not take gcloud's --impersonate-service-account flag; it honours the
+# same setting as an environment property.
+ROWS="$(CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT="$SA" bq --project_id="$LOGGING" query --use_legacy_sql=false --format=csv \
 	"SELECT COUNT(*) FROM \`${LOGGING}.org_audit_logs.cloudaudit_googleapis_com_activity\`" 2>/dev/null | tail -1)"
-[[ "${ROWS:-0}" =~ ^[0-9]+$ ]] && [ "$ROWS" -gt 0 ] && ok "org sink delivering ($ROWS admin-activity rows)" ||
+[[ "${ROWS:-}" =~ ^[0-9]+$ ]] && [ "$ROWS" -gt 0 ] && ok "org sink delivering ($ROWS admin-activity rows)" ||
 	skip "org sink has no rows yet (first delivery can take several minutes)"
 
 section "Network (needs make deploy-network)"
@@ -122,7 +129,8 @@ if [ -n "$PROBE" ] && [ "$PROBE" != "null" ]; then
 	[[ "$CODE" =~ ^(200|301|302)$ ]] && ok "allowlisted FQDN reachable (github.com -> $CODE)" || bad "github.com unreachable from the probe (got '$CODE')"
 
 	CODE="$(ssh_probe 'curl -s -m 10 -o /dev/null -w "%{http_code}" https://example.com || true')"
-	[[ "$CODE" =~ ^(000|)$ ]] && ok "non-allowlisted destination denied (example.com)" || bad "example.com reachable from the probe ($CODE)"
+	# Not ^(000|)$: bash 3.2 (macOS) never matches an empty ERE alternative.
+	[[ -z "$CODE" || "$CODE" == "000" ]] && ok "non-allowlisted destination denied (example.com)" || bad "example.com reachable from the probe ($CODE)"
 
 	IP="$(ssh_probe 'getent hosts storage.googleapis.com | cut -d" " -f1')"
 	[[ "$IP" =~ ^10\. ]] && ok "storage.googleapis.com resolves to the PSC endpoint ($IP)" || bad "Google APIs resolve publicly ($IP)"
