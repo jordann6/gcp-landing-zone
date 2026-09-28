@@ -1,0 +1,35 @@
+name: TTL guard
+
+# Scheduled watch for a forgotten teardown. In check_only mode it reads live
+# state and fails if any hourly-billed resource is still standing; the red
+# scheduled run and its notification are the alarm. It changes nothing, so it
+# runs as the read-only sa-gha-plan.
+#
+# The roots that bill hourly are network (NAT, PSC, probe VM) and workload (GKE,
+# Cloud SQL HA + replica, about $10-12 a day if forgotten).
+#
+# INACTIVE for the same two reasons as apply.yml. Until then, the local
+# scripts/verify-teardown.sh is the standing-resource check.
+# ACTIVATE: uncomment the schedule.
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "0 * * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  ttl:
+    strategy:
+      matrix:
+        root: [network, workload]
+    permissions:
+      contents: read
+      id-token: write
+    uses: jordann6/platform-guardrails/.github/workflows/tf-destroy.yml@v1.4.0
+    with:
+      terraform_dir: ${{ matrix.root }}
+      gcp_workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+      gcp_service_account: ${{ vars.GCP_PLAN_SA }}
+      check_only: true

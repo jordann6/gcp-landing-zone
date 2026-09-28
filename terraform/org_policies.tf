@@ -7,18 +7,31 @@
 # the API rejects a resource that violates a constraint, so the violation cannot
 # exist rather than merely being disallowed to whoever asked.
 #
-# Everything here is applied at the organization so a project created outside
+# Org-wide constraints attach at the organization so a project created outside
 # the landing zone folders is still governed. A policy attached only to a folder
-# is bypassed by creating a project somewhere else, which defeats the point.
+# is bypassed by creating a project somewhere else. Folder-level policy is used
+# only where the point is that one tier differs from another (prod CMEK, the
+# sandbox location widening).
 
 locals {
-  # Boolean constraints enforced everywhere, no exceptions.
-  boolean_constraints = [
-    # No service account keys. Same control as the federation build, hoisted to
-    # the altitude it belongs at once more than one project exists.
+  # Google pre-applies a secure-by-default set on new organizations. These are
+  # NOT managed here, deliberately. The v1 build imported them to resolve 409s,
+  # which made Terraform their owner, and `terraform destroy` then deleted them,
+  # leaving the org less protected than before the landing zone existed.
+  # Leaving them unmanaged means destroy cannot touch them. scripts/test-guardrails.sh
+  # asserts they are still enforced, so the landing zone still depends on them
+  # being there without owning them.
+  google_default_constraints = [
+    "compute.restrictProtocolForwardingCreationForTypes",
+    "compute.setNewProjectDefaultToZonalDNSOnly",
+    "iam.automaticIamGrantsForDefaultServiceAccounts",
     "iam.disableServiceAccountKeyCreation",
     "iam.disableServiceAccountKeyUpload",
+    "storage.uniformBucketLevelAccess",
+  ]
 
+  # Boolean constraints this landing zone owns, enforced everywhere.
+  boolean_constraints = [
     # No default VPC, with its permissive rules nobody chose.
     "compute.skipDefaultNetworkCreation",
 
@@ -29,12 +42,26 @@ locals {
     # removing a role instead of hunting down a key.
     "compute.requireOsLogin",
 
-    # Cloud SQL instances stay off public IPs.
-    "sql.restrictPublicIp",
+    # Secure boot, vTPM, and integrity monitoring on every VM, GKE nodes included.
+    "compute.requireShieldedVm",
 
-    # ACLs are legacy and reason about objects individually. Uniform access
-    # means bucket IAM is the whole story.
-    "storage.uniformBucketLevelAccess",
+    # Guest attributes leak instance metadata written from inside the VM, and
+    # nested virtualization runs a hypervisor the platform cannot see into.
+    "compute.disableGuestAttributesAccess",
+    "compute.disableNestedVirtualization",
+
+    # A Shared VPC host cannot have its lien removed, so a host project cannot be
+    # deleted out from under the service projects that depend on it.
+    "compute.restrictXpnProjectLienRemoval",
+
+    # Cloud SQL stays off public IPs, and authorized networks cannot be added to
+    # open a path around that.
+    "sql.restrictPublicIp",
+    "sql.restrictAuthorizedNetworks",
+
+    # Public access prevention on every bucket, not only the ones someone
+    # remembered to configure.
+    "storage.publicAccessPrevention",
   ]
 }
 
@@ -53,7 +80,7 @@ resource "google_org_policy_policy" "boolean" {
 
 # No external IPs on VMs. A list constraint denying all values, which is not the
 # same as a boolean: it is a deny of every possible value, and a child folder
-# can still allow specific ones.
+# could still allow specific instances.
 resource "google_org_policy_policy" "vm_external_ip" {
   name   = "organizations/${var.org_id}/policies/compute.vmExternalIpAccess"
   parent = "organizations/${var.org_id}"
@@ -80,23 +107,41 @@ resource "google_org_policy_policy" "resource_locations" {
   }
 }
 
-# Inheritance override, built deliberately to demonstrate the mechanism.
-#
-# nonprod inherits every constraint above, then relaxes exactly one: resource
-# locations widen to include EU value groups for a residency test. inherit_from_parent
-# with a narrower rule is how an exception is granted without disabling the
-# parent policy, and it is the part of GCP org policy that has no clean SCP
-# analogue, since an SCP deny cannot be un-denied lower down.
-resource "google_org_policy_policy" "nonprod_locations" {
-  name   = "${google_folder.nonprod.name}/policies/gcp.resourceLocations"
-  parent = google_folder.nonprod.name
+# ---- tier-specific policy -------------------------------------------------------
+
+# Sandbox widens one inherited constraint, deliberately, to demonstrate the
+# mechanism. inherit_from_parent = false with a wider value set is how an
+# exception is granted without disabling the parent policy, and it is the part
+# of GCP org policy that has no clean SCP analogue: an SCP deny cannot be
+# un-denied lower down, so AWS grants exceptions by moving the account.
+resource "google_org_policy_policy" "sandbox_locations" {
+  name   = "${google_folder.sandbox.name}/policies/gcp.resourceLocations"
+  parent = google_folder.sandbox.name
 
   spec {
     inherit_from_parent = false
 
     rules {
       values {
-        allowed_values = concat(var.allowed_resource_locations, var.nonprod_extra_locations)
+        allowed_values = concat(var.allowed_resource_locations, var.sandbox_extra_locations)
+      }
+    }
+  }
+}
+
+# Prod is stricter by placement alone. The listed services cannot create a
+# resource in the prod folder without a customer-managed key, so the workload
+# root's CMEK wiring is enforced by the platform, not by review. Dev and test
+# carry no such rule, which is the point: the same Terraform would be accepted
+# there and rejected here.
+resource "google_org_policy_policy" "prod_require_cmek" {
+  name   = "${google_folder.env["prod"].name}/policies/gcp.restrictNonCmekServices"
+  parent = google_folder.env["prod"].name
+
+  spec {
+    rules {
+      values {
+        denied_values = var.prod_cmek_services
       }
     }
   }

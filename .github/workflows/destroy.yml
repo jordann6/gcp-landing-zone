@@ -1,0 +1,35 @@
+name: Destroy (manual teardown)
+
+# Manual teardown of one root: terraform destroy, then a post-destroy check that
+# fails if any hourly-billed resource survived (hourly-guard.sh, which knows the
+# GCP hourly types: NAT, forwarding rules, GKE, Cloud SQL, VMs, VPN tunnels).
+# Gated by the destroy environment, whose WIF binding is the only other path to
+# sa-terraform.
+#
+# Run in order: workload, then network, then terraform (governance).
+# INACTIVE for the same two reasons as apply.yml; teardown runs locally with
+# make destroy until then.
+on:
+  workflow_dispatch:
+    inputs:
+      root:
+        description: Terraform root to destroy (workload first)
+        type: choice
+        options: [workload, network, terraform]
+        default: workload
+
+permissions:
+  contents: read
+
+jobs:
+  destroy:
+    permissions:
+      contents: read
+      id-token: write
+    uses: jordann6/platform-guardrails/.github/workflows/tf-destroy.yml@v1.4.0
+    with:
+      terraform_dir: ${{ inputs.root }}
+      environment: destroy
+      gcp_workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+      gcp_service_account: ${{ vars.GCP_APPLY_SA }}
+      check_only: false

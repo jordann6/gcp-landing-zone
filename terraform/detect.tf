@@ -1,38 +1,38 @@
 # The detect layer.
 #
-# Everything else in this build is preventive. Prevention has a ceiling: it
-# stops what you anticipated, and a landing zone with no detection cannot tell
-# you when a control was changed, bypassed, or never applied to something that
+# Everything else in this root is preventive. Prevention has a ceiling: it stops
+# what you anticipated, and a landing zone with no detection cannot tell you
+# when a control was changed, bypassed, or never applied to something that
 # arrived by another path.
 #
-# Security Command Center Standard is free and is all this needs. Premium and
-# Enterprise are priced against total asset spend and are emphatically not
-# something to enable to see what happens.
+# Security Command Center Standard is free and runs here. The CIS benchmark
+# compliance report needs SCC Premium or Enterprise, which are priced against
+# total asset spend and are not something to enable to see what happens. That
+# is documented as the production design in docs/cis-mapping.md, the same way
+# Shield Advanced is documented-only in the AWS zone.
 
 resource "google_pubsub_topic" "findings" {
-  project      = var.seed_project_id
+  project      = module.logging_project.project_id
   name         = "scc-findings"
-  labels       = var.labels
   kms_key_name = google_kms_crypto_key.telemetry.id
 
   depends_on = [google_kms_crypto_key_iam_member.pubsub_agent]
 }
 
 # Findings land here for a subscriber that does not exist yet. That is the
-# honest state of this build: the pipe is real, the consumer is the next
+# honest state of this build: the pipe is real, the consumer is a later
 # project's job.
 resource "google_pubsub_subscription" "findings" {
-  project = var.seed_project_id
+  project = module.logging_project.project_id
   name    = "scc-findings-sub"
   topic   = google_pubsub_topic.findings.id
-  labels  = var.labels
 
   message_retention_duration = "604800s"
   ack_deadline_seconds       = 20
 
   expiration_policy {
     # Never expire. The default is 31 days of inactivity, which silently deletes
-    # the subscription on a quiet org and takes the audit trail with it.
+    # the subscription on a quiet org and takes the backlog with it.
     ttl = ""
   }
 }
@@ -52,13 +52,14 @@ resource "google_scc_notification_config" "active_findings" {
   }
 }
 
-# Budget alerting. A landing zone that governs security but not spend is half a
-# landing zone, and cost is the failure mode most likely to actually occur in a
-# personal org.
+# ---- cost ---------------------------------------------------------------------
+#
+# A landing zone that governs security but not spend is half a landing zone,
+# and cost is the failure mode most likely to actually occur in a personal org.
+
 resource "google_pubsub_topic" "budget" {
-  project      = var.seed_project_id
+  project      = module.logging_project.project_id
   name         = "budget-alerts"
-  labels       = var.labels
   kms_key_name = google_kms_crypto_key.telemetry.id
 
   depends_on = [google_kms_crypto_key_iam_member.pubsub_agent]
@@ -97,9 +98,43 @@ resource "google_billing_budget" "org" {
   }
 
   all_updates_rule {
-    pubsub_topic                     = google_pubsub_topic.budget.id
-    schema_version                   = "1.0"
-    disable_default_iam_recipients   = false
-    monitoring_notification_channels = []
+    pubsub_topic                   = google_pubsub_topic.budget.id
+    schema_version                 = "1.0"
+    disable_default_iam_recipients = false
+  }
+}
+
+# The sandbox gets its own, much smaller budget. Sandbox is where experiments
+# are allowed to be sloppy, which is exactly why its spend is fenced separately.
+resource "google_billing_budget" "sandbox" {
+  count = var.vend_sandbox ? 1 : 0
+
+  billing_account = var.billing_account
+  display_name    = "sandbox-monthly"
+
+  budget_filter {
+    projects        = ["projects/${module.sandbox_project[0].project_number}"]
+    calendar_period = "MONTH"
+  }
+
+  amount {
+    specified_amount {
+      currency_code = "USD"
+      units         = tostring(var.sandbox_budget_usd)
+    }
+  }
+
+  dynamic "threshold_rules" {
+    for_each = var.budget_thresholds
+    content {
+      threshold_percent = threshold_rules.value
+      spend_basis       = "CURRENT_SPEND"
+    }
+  }
+
+  all_updates_rule {
+    pubsub_topic                   = google_pubsub_topic.budget.id
+    schema_version                 = "1.0"
+    disable_default_iam_recipients = false
   }
 }

@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars. Gitignored. seed_project_id,
+# terraform_service_account, and state_bucket come from make wire
+# (lz.auto.tfvars).
+
+# Who runs make test: IAP + OS Login + read on the probe VM's project.
+operators = ["user:you@example.com"]
+
+# Destinations workloads may reach on 443. Google APIs need no entry; they go
+# through the PSC endpoint.
+# egress_fqdn_allowlist = ["github.com", "api.github.com"]
+
+# If the org already has an access policy (only one is allowed), pass its
+# number: gcloud access-context-manager policies list --organization=<org_id>
+# access_policy_name = "123456789012"
+
+# First apply in dry-run if you want to see what the perimeter would block.
+# vpc_sc_dry_run = true

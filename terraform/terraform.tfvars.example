@@ -1,20 +1,49 @@
 # Copy to terraform.tfvars and fill in. Gitignored.
+#
+# seed_project_id and terraform_service_account are NOT set here: make wire
+# writes them to lz.auto.tfvars from the bootstrap outputs.
 
 org_id          = "000000000000"
 billing_account = "000000-000000-000000"
 
-# From the bootstrap layer output.
-seed_project_id = "jn-lz-seed-a1b2c3"
+# ---- how much to vend ---------------------------------------------------------
+#
+# Full mirror (the canonical design): 10 projects plus the seed.
+#   core: logging, net-hub    workloads: net-dev, net-test, net-prod, net-prod-r,
+#   app-dev, app-test, app-prod    sandbox: sandbox
+#
+# A self-serve billing account caps linked projects (and DELETE_REQUESTED
+# projects count for 30 days). If the cap is lower than that, vend the reduced
+# set: seed + logging + net-prod-r + app-prod (4) still exercises every pillar
+# the workload root needs. Folders and every policy exist either way.
+#
+# environments = {
+#   dev  = { base = false, restricted = false, app = false }
+#   test = { base = false, restricted = false, app = false }
+#   prod = { base = false, restricted = true,  app = true }
+# }
+# vend_hub     = false
+# vend_sandbox = false
 
-# Only needed when enable_domain_restricted_sharing is true.
-# gcloud organizations describe <org_id> --format='value(owner.directoryCustomerId)'
-# customer_id = "C0xxxxxxx"
+# ---- identity -------------------------------------------------------------------
+
+# Leave issuer_uri empty to create the workforce pool and persona bindings
+# without a sign-in path yet.
+# workforce_idp = {
+#   issuer_uri = "https://login.microsoftonline.com/<tenant-id>/v2.0"
+#   client_id  = "<app registration client id>"
+# }
+
+# Org-level admins outside the IdP. Every API call they make raises an alert.
+# break_glass_members = ["user:you@example.com"]
+
+# Alert channel and essential contacts.
+# alert_email = "you@example.com"
+
+# ---- guardrail switches -------------------------------------------------------
 
 # Off by default: this constraint blocks binding allUsers, which breaks any
-# public Cloud Run service.
+# public Cloud Run service. Needs customer_id (Cloud Identity orgs only).
 enable_domain_restricted_sharing = false
-
-# Requires roles/securitycenter.notificationConfigEditor at the organization.
-enable_scc_notifications = true
 
 monthly_budget_usd = 25

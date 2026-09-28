@@ -45,7 +45,27 @@ variable "labels" {
   description = "Labels applied to the seed project."
   type        = map(string)
   default = {
-    managed-by = "terraform"
-    project    = "gcp-landing-zone"
+    managed-by  = "terraform"
+    project     = "gcp-landing-zone"
+    owner       = "jordan"
+    cost_center = "cc-0001"
   }
+}
+
+variable "operators" {
+  description = "Principals allowed to impersonate sa-terraform (user:you@example.com). The only standing human grant in the landing zone."
+  type        = list(string)
+  default     = []
+}
+
+variable "github_repository" {
+  description = "owner/repo whose Actions runs may federate into the seed project."
+  type        = string
+  default     = "jordann6/gcp-landing-zone"
+}
+
+variable "github_apply_environments" {
+  description = "GitHub environments whose jobs may impersonate sa-terraform. Each must carry a required reviewer."
+  type        = list(string)
+  default     = ["prod-apply", "destroy"]
 }

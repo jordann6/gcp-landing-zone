@@ -1,0 +1,56 @@
+# Default-deny inside the cluster, mirroring the VPC-edge default deny.
+# Dataplane V2 enforces these natively.
+#
+# Rendered by scripts/test-workload.sh with the PSA range and PSC endpoint.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: app
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Every pod needs DNS and the GKE metadata server (Workload Identity tokens).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-and-metadata
+  namespace: app
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock: { cidr: 169.254.169.252/32 }
+      ports:
+        - { protocol: TCP, port: 988 }
+    - to:
+        - ipBlock: { cidr: 169.254.169.254/32 }
+      ports:
+        - { protocol: TCP, port: 80 }
+---
+# Only the app tier reaches the database, on 5432, and Google APIs through the
+# PSC endpoint (Secret Manager).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-tier-egress
+  namespace: app
+spec:
+  podSelector:
+    matchLabels:
+      tier: app
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: { cidr: ${PSA_RANGE} }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - ipBlock: { cidr: ${PSC_IP}/32 }
+      ports:
+        - { protocol: TCP, port: 443 }

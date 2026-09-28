@@ -1,0 +1,10 @@
+# Optional. Everything has a working default. seed_project_id,
+# terraform_service_account, and state_bucket come from make wire.
+
+# Skip the DR replica to roughly halve the data tier's hourly cost.
+# enable_cross_region_replica = false
+
+# Attach Cloud SQL to the immutable backup vault. Once a backup lands, the vault
+# cannot be deleted until backup_vault_min_retention passes, so plan the
+# teardown around it.
+# associate_sql_with_vault = true
