@@ -1,212 +1,284 @@
 # GCP Landing Zone
 
-An organization built as code: resource hierarchy, org policy enforced at the org root, a Shared VPC with no public path, centralized audit logging that covers projects created after the sink exists, and budget plus Security Command Center alerting on the detect side.
-
-Every project is vended through one factory, so a project cannot exist without a folder, a billing link, audit logging, and the default network suppressed.
+An organization built as code to Google's security foundations blueprint: five
+governed tiers, org policy and custom constraints at the root, per-environment
+base and restricted Shared VPCs behind a VPC Service Controls perimeter,
+workforce-federated personas with just-in-time prod access, and a private GKE
+plus Cloud SQL paved road that proves the controls hold for a real workload.
 
 ![Architecture](docs/architecture.png)
 
-**Cost:** roughly $0.50 per month if left standing, dominated by one KMS key and a small BigQuery dataset. **Teardown:** documented, with the GCP-specific traps that make it non-obvious.
+It is one of three standalone landing zones (AWS, Azure, GCP) built to the same
+design: the same tiers, the same `10.x` address plan, the same pipeline, and no
+connectivity between them. Canonical design:
+`aws-scp-governance/docs/multicloud-networking-design.md`.
+
+**Cost:** under $0.50/month standing. A full deploy, test, and destroy session is
+about $2 to $5. Every hourly resource lives in a root that is torn down on its own.
 
 ## The problem
 
-A cloud organization decays in a predictable direction. Projects get created outside any hierarchy, each with a default VPC nobody chose and firewall rules nobody reviewed. Service account keys accumulate. Audit logs exist per project and nowhere centrally, so the question "who read that" has no answer. Spend is discovered monthly.
+A cloud organization decays in a predictable direction. Projects get created
+outside any hierarchy, each with a default VPC nobody chose. Service account keys
+accumulate. Audit logs exist per project and nowhere centrally, so "who read
+that" has no answer. A workload can reach any address on the internet and any
+public registry. Spend is discovered monthly.
 
-None of this is caused by bad engineers. It is caused by the defaults being wrong, and by every correct decision needing to be remade by each person who creates a project.
-
-A landing zone moves those decisions to a place where they cannot be skipped: into the hierarchy itself, where inheritance does the enforcement.
+None of this is caused by bad engineers. It is caused by the defaults being
+wrong, and by every correct decision needing to be remade by each person who
+creates a project. A landing zone moves those decisions into the hierarchy,
+where inheritance enforces them and nobody can skip them.
 
 ## How GCP differs from AWS and Azure here
 
-This project is the third of the same idea, after AWS Organizations with SCPs and an Azure Landing Zone with Azure Policy. The differences are the interesting part.
+**Org policy constrains configuration, not callers.** An SCP is a deny boundary
+evaluated against IAM at request time. Azure Policy evaluates resources and can
+deny, audit, or mutate. GCP org policy constrains the shape of the configuration
+itself: the API rejects a resource that violates a constraint.
 
-**Org policy constrains configuration, not callers.** An SCP is a deny boundary evaluated against IAM at request time: the call is authorized or it is not. Azure Policy evaluates resources and can deny, audit, or mutate through effects. GCP org policy constrains the *shape of the configuration itself*, so the API rejects a resource that violates a constraint. The violation cannot exist rather than being disallowed to whoever asked.
+**Exceptions work in the opposite direction.** An SCP deny cannot be un-denied
+lower in the tree, so AWS grants exceptions by moving accounts. A GCP child
+policy can widen an inherited list constraint. The sandbox folder does exactly
+that for `gcp.resourceLocations`, and prod does the reverse, adding a CMEK
+requirement nothing else carries.
 
-**Exceptions work in the opposite direction.** An SCP deny cannot be un-denied further down the tree, so AWS exceptions are granted by moving accounts to a different OU. GCP list constraints support a child policy that widens an inherited one. This repo demonstrates it deliberately: `gcp.resourceLocations` allows US locations at the org, and `nonprod` overrides it to add EU for a residency test, without weakening the policy anywhere else.
+**IAM inherits down the hierarchy.** A role on a folder applies to every project
+beneath it, including projects that do not exist yet. Folder design is a
+security decision.
 
-**IAM inherits down the hierarchy too.** In AWS, an OU is a policy attach point but IAM lives in the account. In GCP a role granted at a folder applies to every project beneath it, forever, including projects that do not exist yet. That makes folder design a security decision, not an org-chart decision.
+**Inspection is distributed, not centralized.** AWS routes every VPC through an
+inspection VPC with Network Firewall. On GCP, Cloud NGFW enforces firewall
+policy at every VM NIC in the fabric, so the equivalent control (default-deny
+egress with an FQDN allowlist, threat-intel deny) is policy attached to each
+VPC, with no appliance to route through, scale, or fail over. Building an
+AWS-style hub with NVAs here would reproduce, at cost, what the platform does
+natively. The hub in this zone holds only what is genuinely shared: DNS and the
+hybrid attachment point.
+
+**Perimeters are a control IAM cannot express.** VPC Service Controls decide
+whether a call may cross a boundary, independent of whether the caller has the
+permission. A stolen credential still cannot read a bucket in the perimeter from
+outside it.
+
+## Layout
+
+| Root | What | Cost posture |
+|---|---|---|
+| `bootstrap/` | Seed project, state bucket, `sa-terraform`, GitHub WIF (plan and gated-apply identities). Runs as you, once | Pennies |
+| `terraform/` | Governance: folders, project factory, org policy, custom constraints, workforce federation, PAM, org sinks, CMEK, SCC, budgets, org-admin and CIS alerts | Nearly free |
+| `network/` | Base + restricted Shared VPCs, Cloud NAT, hierarchical + network firewall policy, PSC + private DNS, hub, VPC-SC, probe VM | Hourly |
+| `workload/` | Paved road in `app-prod`: private GKE, Cloud SQL HA + DR replica, Secret Manager, Artifact Registry, Binary Authorization, backup vault | Hourly |
+
+Each root after bootstrap applies as `sa-terraform` through impersonation and
+reads the root beneath it from remote state.
 
 ## What gets built
 
-**Hierarchy.** `core` holds platform-owned projects (network, logging). `workloads` splits into `nonprod` and `prod`. The two workload projects are identical except for placement, which is the whole point: they are governed differently without either carrying policy code.
+**Hierarchy (five tiers, same as AWS OUs and Azure MGs).** `core` (logging,
+net-hub), `workloads` (dev, test, prod), `sandbox`. Every project goes through
+`modules/project-factory`, so none exists without a folder, billing, data-access
+audit logs, and the default network suppressed.
 
-**Org policy, nine constraints at the organization root.** Applied at the org rather than the folder, because a policy attached to a folder is bypassed by creating a project somewhere else.
+**Org policy at the root.** Ten boolean constraints (no default network, OS
+Login, Shielded VM, no serial port, no guest attributes or nested
+virtualization, Shared VPC lien protection, no public or authorized-network
+Cloud SQL, public access prevention), no VM external IPs, and US-only
+locations. Prod adds `gcp.restrictNonCmekServices`; sandbox widens locations to
+the EU.
 
-| Constraint | What it prevents |
-|---|---|
-| `iam.disableServiceAccountKeyCreation` | Long-lived JSON keys that authenticate forever from anywhere |
-| `iam.disableServiceAccountKeyUpload` | The same, via the upload path |
-| `compute.skipDefaultNetworkCreation` | A default VPC with permissive rules nobody chose |
-| `compute.disableSerialPortAccess` | A console path that bypasses SSH controls and OS Login |
-| `compute.requireOsLogin` | SSH keys in instance metadata, revocable only by hunting them down |
-| `sql.restrictPublicIp` | Databases on public addresses |
-| `storage.uniformBucketLevelAccess` | Legacy ACLs that reason about objects one at a time |
-| `compute.vmExternalIpAccess` | External IPs on VMs, denied as a list constraint |
-| `gcp.resourceLocations` | Resources outside approved geography |
+Six constraints Google pre-applies to new orgs (SA key creation and upload,
+uniform bucket access, and three others) are **deliberately not managed**. v1
+imported them, which made Terraform their owner, and `terraform destroy` then
+deleted them. `make test` asserts they are still enforced instead.
 
-`iam.allowedPolicyMemberDomains` is written but **off by default**, and the default is the point: it blocks binding `allUsers`, which breaks any public Cloud Run service. Enabling it without knowing that is how a landing zone quietly blocks a workload the org intends to run.
+**Custom constraints.** CEL rules, enforced at the org: GKE clusters must use
+private nodes, and GKE clusters and Cloud SQL instances must carry a
+`cost_center` label. Spend that cannot be allocated is rejected at creation.
+This is GCP's tag enforcement, and it is stronger than a report.
 
-**Shared VPC.** One host project owns the network; workload projects attach as service projects and consume a subnet they do not own. Network policy is set once and inherited rather than re-argued per project. The subnet carries flow logs, Private Google Access, and secondary ranges sized for a future GKE cluster. Firewall is explicit default-deny plus SSH from the IAP forwarding range only, so there is no public SSH path at all. Access is granted per subnet rather than per project, which is the least-privilege form of Shared VPC.
+**Identity.** Workforce Identity Federation to an external OIDC IdP, seven
+personas bound to IdP groups at folder scope, no standing prod write, and two
+Privileged Access Manager entitlements (`prod-write`, `org-admin`) that grant
+roles for one hour after a security approval. Break-glass is the org's original
+admin, and every call it makes raises an alert. See
+[docs/access-model.md](docs/access-model.md).
 
-**Centralized logging.** An organization sink with `include_children` ships admin activity, data access, system event, and policy denial logs to a partitioned BigQuery dataset. Projects created tomorrow are covered without touching the sink. Partition expiry bounds both retention and cost, since audit volume is the line item that surprises people.
+**Network.** Per environment `/16`, split into a restricted `/17` (GKE nodes
+10.3.0.0/20, services 10.3.32.0/19, pods 10.3.64.0/18, PSA 10.3.16.0/20) and a
+base `/17`. The default internet route is deleted on every VPC and re-added only
+for Cloud NAT. The org hierarchical policy denies internet ingress except IAP
+SSH and health checks, and drops known-malicious IPs both ways. Each VPC's
+network policy denies all egress except its own range, the PSC endpoint, and an
+FQDN allowlist. Google APIs resolve to a PSC endpoint through private zones: the
+`all-apis` bundle on base, `vpc-sc` on restricted. Environments are not peered
+to each other or to the hub.
 
-**Detect.** Security Command Center Standard, which is free, streams active unmuted findings to Pub/Sub. A budget on the whole billing account alerts at 50, 90, and 100 percent of actual spend plus a forecast rule, because a landing zone that governs security but not spend is half a landing zone.
+**VPC Service Controls.** The restricted host and its app project sit in one
+perimeter that restricts Storage, BigQuery, Cloud SQL, Secret Manager, KMS, and
+Pub/Sub. `sa-terraform` is admitted by an ingress rule, the org sinks by an
+egress rule, and you are not, which is what `make test` proves.
 
-**CMEK across telemetry.** The audit dataset and both Pub/Sub topics share one key, so a single disable revokes the org's entire audit trail and finding stream at once, with no IAM edit and nothing deleted.
+**Logging and detection.** Two org sinks with `include_children`: a CMEK
+BigQuery dataset for long-form audit queries, and a Log Analytics bucket that
+the alert metrics count against (org IAM, org policy, VPC-SC, firewall policy,
+break-glass use, and CIS 2.4 to 2.11). SCC Standard streams findings to Pub/Sub.
+Budgets on the billing account and, separately, the sandbox.
+
+**Paved road.** A private zonal GKE cluster (DNS endpoint for operators, no IP
+allowlist, no bastion), Dataplane V2 NetworkPolicy, Workload Identity with
+direct principal bindings (no GSA, no key), KMS envelope encryption of etcd,
+CMEK node disks, and Binary Authorization requiring a KMS-signed attestation.
+Images come only from an Artifact Registry virtual repo over org images and a
+Docker Hub pull-through cache. Cloud SQL for PostgreSQL 17 is regional HA,
+private IP, TLS-only, CMEK, with PITR and a cross-region replica in us-east1.
+Only the GKE nodes' service account reaches the PSA range on 5432; NetworkPolicy
+narrows that to `tier=app` pods.
 
 ## Deploy
 
-Requires an org, an open billing account, and these roles. Three of the four are commonly missing, and each was found by an apply failing:
+Requires an org and an open billing account. Bootstrap runs as you and needs
+`organizationAdmin`, `billing.admin`, and `projectCreator`; it grants everything
+else to `sa-terraform`.
 
-| Role | Needed for |
+```bash
+cp bootstrap/terraform.tfvars.example bootstrap/terraform.tfvars   # org, billing, operators
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars   # vend set, alert email
+cp network/terraform.tfvars.example network/terraform.tfvars       # operators
+
+make bootstrap        # seed, state, sa-terraform, WIF; writes backend.hcl + lz.auto.tfvars
+make deploy           # governance (nearly free)
+make deploy-network   # hourly
+make deploy-workload  # hourly
+```
+
+**Project cap.** A self-serve billing account caps linked projects, and deleted
+projects count for 30 days. The full design vends 10 plus the seed. The `vend`
+flags in `terraform.tfvars` pick a reduced set (seed, logging, net-prod-r,
+app-prod) that still exercises the workload root; the example file shows both.
+
+## Test
+
+```bash
+make test            # governance + network
+make test-workload   # paved road (includes a Cloud SQL failover; SKIP_FAILOVER=1 to skip)
+```
+
+Every check prints PASS, FAIL, or SKIP, and a denial passes only if the error
+names the expected control, so a denial for some other reason is not a false
+pass.
+
+| Check | Proves |
 |---|---|
-| `resourcemanager.organizationAdmin` | Org IAM |
-| `resourcemanager.folderAdmin` | Creating and deleting folders. **Not** in `organizationAdmin` |
-| `orgpolicy.policyAdmin` | The constraints. **Not** in `organizationAdmin` |
-| `compute.xpnAdmin` | Enabling the Shared VPC host. **Not** in `organizationAdmin` |
-| `logging.configWriter` | Creating the organization sink. **Not** in `organizationAdmin` |
-| `billing.admin` | Linking billing and creating the budget |
-| `securitycenter.notificationConfigEditor` | The SCC notification config. Was **not sufficient** on its own here, see below |
+| Google default constraints still enforced | Destroy did not delete what it did not create |
+| SA key creation, out-of-region bucket, VM external IP | Org policy denials, each naming its constraint |
+| Bucket without CMEK: rejected in prod, accepted in dev | Placement alone changes governance |
+| Sandbox resolves EU locations, prod does not | Child policy widening, inheritance |
+| Freshly vended project has zero networks | Factory + `skipDefaultNetworkCreation` |
+| Custom constraints enforced; workforce pool and PAM entitlement exist | Identity and label controls are live |
+| Org sink delivering | Audit trail from every project |
+| Probe: github.com reachable, example.com denied | FQDN allowlist, default-deny egress |
+| Probe: `storage.googleapis.com` resolves to 10.x | PSC + private DNS |
+| You are denied reading storage in the perimeter; sa-terraform is admitted | VPC Service Controls |
+| Unsigned image rejected; signed digest admitted | Binary Authorization |
+| Job reads its secret through WI and connects over TLS | Workload Identity, Secret Manager, private Cloud SQL |
+| Unlabelled pod and the probe VM cannot reach 5432 | NetworkPolicy and firewall-policy segmentation |
+| Private IP only, CMEK, HA, PITR, replica running | Data tier |
+| Failover changes zone, keeps the IP | HA, with the time printed as measured RTO |
 
-The pattern is worth internalizing: `organizationAdmin` administers IAM policy at the organization and grants almost none of the operational org-level permissions. Four separate roles had to be added, each discovered by an apply failing on exactly one resource.
+## Cost
 
-```bash
-# 1. Seed project and state bucket. Local state, because this creates the bucket.
-cd bootstrap
-cp terraform.tfvars.example terraform.tfvars   # org_id, billing_account
-terraform init && terraform apply
+| | |
+|---|---|
+| Governance, standing | KMS key versions, a small BigQuery dataset: pennies |
+| Network, while up | PSC endpoints, NAT (billed per VM using it), NGFW per GB, probe e2-micro: about $0.10 to $0.15/hr |
+| Workload, while up | Cloud SQL HA on 1 vCPU (about $0.13/hr), DR replica (about $0.07/hr), two e2-standard-2 nodes (about $0.20/hr). The zonal GKE management fee is covered by the free tier: about $0.40 to $0.50/hr |
+| Full session (about 3.5 hours) | About $2 to $5 |
+| After destroy | Under $0.50/mo (key rings cannot be deleted; empty ones are free) |
 
-# 2. Point the landing zone at that bucket.
-cd ../terraform
-terraform -chdir=../bootstrap output -raw backend_hcl > backend.hcl
-cp terraform.tfvars.example terraform.tfvars   # add org_id, billing_account, seed_project_id
-
-# 3. The organization itself.
-terraform init -backend-config=backend.hcl
-terraform apply
-```
-
-Applying with user credentials requires a quota project, or `orgpolicy` calls bill to Google's shared OAuth client project and fail with a confusing `SERVICE_DISABLED`:
-
-```bash
-gcloud auth application-default set-quota-project <seed-project-id>
-```
-
-## Validation
+## Destroy
 
 ```bash
-# Constraints are live at the org, not merely declared.
-gcloud org-policies list --organization="${ORG_ID}"
-
-# Inheritance: prod gets the org policy, nonprod gets its override.
-gcloud org-policies describe gcp.resourceLocations --folder="${PROD_FOLDER}" --effective
-gcloud org-policies describe gcp.resourceLocations --folder="${NONPROD_FOLDER}" --effective
-
-# The org sink is delivering. Empty means the writer identity grant is missing,
-# which is the usual cause of a correct-looking sink shipping nothing.
-bq query --use_legacy_sql=false \
-  "SELECT COUNT(*) FROM \`${LOGGING_PROJECT}.org_audit_logs.cloudaudit_googleapis_com_activity\`"
-
-# Shared VPC attachment.
-gcloud compute shared-vpc get-host-project "${NONPROD_PROJECT}"
+make destroy   # workload, then network, then governance, then verify-teardown.sh
+terraform -chdir=bootstrap destroy   # last, with force_destroy_state = true
 ```
 
-Three checks that prove a control by failing:
+`scripts/verify-teardown.sh` checks both Terraform state and the live org: no
+VMs, routers, forwarding rules, VPN tunnels, disks, clusters, or SQL instances in
+any landing zone project, and Google's default constraints still present. A
+LoadBalancer Service's forwarding rule or a PVC's disk is never in Terraform
+state, and this is what catches it.
 
-```bash
-# A service account key cannot be issued.
-gcloud iam service-accounts keys create /tmp/k.json --iam-account="${SA}"
-# ERROR: FAILED_PRECONDITION ... constraints/iam.disableServiceAccountKeyCreation
+GCP teardown traps, all hit for real in v1 or designed around here:
 
-# A resource outside approved locations is refused.
-gcloud storage buckets create gs://test-asia --location=asia-northeast1 --project="${PROD_PROJECT}"
-# ERROR: HTTPError 412: 'asia-northeast1' violates constraint 'constraints/gcp.resourceLocations'
-```
+- **Importing a policy makes you its owner, and destroy then deletes it.** v1
+  imported Google's pre-applied constraints and destroy removed them, leaving
+  the org less protected than before. Restore with
+  `gcloud resource-manager org-policies enable-enforce <constraint> --organization=<org>`.
+  This build never imports them.
+- **Org policies are deleted, not reverted.** Destroy returns the org to Google's
+  defaults, not to some previous state.
+- **Folders must be empty,** including of projects in `DELETE_REQUESTED`.
+- **KMS key rings cannot be deleted, ever.** Destroy drops them from state;
+  deleting the project takes them with it.
+- **Deleted projects linger 30 days** with IDs never reusable. They still show in
+  `gcloud projects list`. Check lifecycle state and billing, not absence.
+- **Org sinks are org-level.** A partial destroy can leave a sink writing to a
+  dataset that no longer exists, silently.
+- **A backup vault with backups in it cannot be deleted** until its enforced
+  retention passes. The Cloud SQL association is off by default for that reason
+  (`associate_sql_with_vault`).
+- **The PSA peering outlives Cloud SQL by a few minutes.** `deletion_policy =
+  ABANDON` lets the network root finish.
 
-Both are denied with the violated constraint named. Note that gcloud creates the key output file before calling the API, so check its size rather than its presence.
+## What the live v1 deploy taught (2026-08-10)
 
-**A test that does not work, and why it is worth knowing.** The obvious third check is to create a network named `default` and expect a denial. It succeeds, and the constraint is not broken.
+**A new GCP organization is not greenfield.** Google pre-applies a
+secure-by-default policy set. Declaring those constraints fails with `409
+POLICY_ALREADY_EXISTS`.
 
-`compute.skipDefaultNetworkCreation` suppresses the default VPC that GCP would otherwise create *at project creation time*. It says nothing about networks created afterwards, and nothing about the name `default`. A user with network permissions can create a VPC called `default` any time, and it is an ordinary custom-mode network that happens to carry that name, without the permissive preset firewall rules the real default VPC ships with.
+**Billing accounts cap linked projects,** and `DELETE_REQUESTED` projects count.
 
-The control is about the project's starting state, not about a reserved name. Verify it by confirming a freshly vended project has zero networks:
+**A resource count must be knowable at plan time.** Hence explicit `vend` and
+`attach_shared_vpc` flags instead of counts derived from generated IDs.
 
-```bash
-gcloud compute networks list --project="${PROD_PROJECT}"   # Listed 0 items.
-```
+**`organizationAdmin` grants almost none of the operational org roles.**
+folderAdmin, policyAdmin, xpnAdmin, and logging.configWriter each had to be
+added after an apply failed on exactly one resource. `sa-terraform` now carries
+the full list, and `securitycenter.admin` replaces the notification role that
+proved insufficient.
 
-## What the live deploy taught
+**`skipDefaultNetworkCreation` governs a project's starting state, not the name
+`default`.** Creating a network called `default` later succeeds. Verify the
+control by listing a freshly vended project's networks.
 
-Five things that only surfaced against a real organization.
+v1 deployed 52 resources, proved inheritance, the org sink, and two policy
+denials, and was destroyed for under $0.20.
 
-**A new GCP organization is not greenfield.** Google now pre-applies a secure-by-default org policy set, so three constraints this repo declares already existed: `iam.disableServiceAccountKeyCreation`, `iam.disableServiceAccountKeyUpload`, and `storage.uniformBucketLevelAccess`. The apply failed with `409 POLICY_ALREADY_EXISTS` on each. The fix is to import them, which is the correct instinct and carries a trap described in the teardown section below.
+## Pipeline
 
-**Billing accounts cap linked projects.** A self-serve billing account allows a limited number of projects linked at once, and projects sitting in `DELETE_REQUESTED` still count for their full 30-day window. This landing zone wants five projects and the cap was reached at four, which is why `vend_nonprod_app` exists. The nonprod folder and its policy override work regardless, and an effective-policy query proves inheritance without a project inside the folder.
-
-**A resource count must be knowable at plan time.** The service project attachment originally used `count = var.shared_vpc_host_project == "" ? 0 : 1`, and the host project ID is generated in the same apply. Terraform refuses: the count value depends on attributes that cannot be determined until apply. A resource's *arguments* may be unknown at plan time; its *count* may not. Hence a separate `attach_shared_vpc` boolean.
-
-**Security Command Center needs more than the notification role.** `securitycenter.notificationConfigEditor` at the organization was not sufficient to create a notification config, which continued to fail with `securitycenter.notificationconfig.create` denied. SCC activation state at the org appears to be the gate. `enable_scc_notifications` defaults to true and was set false for the verified run, so the Pub/Sub topics exist and the SCC config does not.
-
-**`skipDefaultNetworkCreation` does not mean what the name suggests.** See the validation section. It governs the project's starting state, not the name `default`.
+`.github/workflows/guardrails.yml` runs the shared
+[platform-guardrails](https://github.com/jordann6/platform-guardrails) static
+gates on every root (gitleaks over full history, fmt, validate, lock files,
+tflint, Checkov, Trivy), this repo's own conftest rules with a fixture that must
+fail, and shellcheck. The gated apply, destroy, and hourly TTL guard use WIF
+through the bootstrap identities; they are wired and inactive until the shared
+workflows' GCP auth path is tagged. See the header of each workflow for the
+activation steps.
 
 ## What changes at production scale
 
-**Terraform runs as a service account, not as you.** Everything here applies with user ADC. Production runs it through workload identity federation from CI, with the seed project holding the identity and no human holding org-level roles day to day.
+- **Regional GKE control plane** and at least two node pools; the free tier
+  covers only a zonal one.
+- **SCC Premium or Enterprise** for scored CIS compliance.
+- **A locked log bucket** and `delete_contents_on_destroy = false`.
+- **Cloud SQL client certificates** through the Auth Proxy or connectors, and
+  IAM database authentication instead of a password.
+- **A secret rotator** subscribed to the rotation topic (the pattern in
+  `aws-secrets-lifecycle` and `azure-secrets-lifecycle`).
+- **An exception workflow** for org policy, since hardcoded overrides are where
+  landing zones erode.
+- **Interconnect** in place of the HA VPN placeholder.
 
-**Policy exceptions need a request path.** The `nonprod` override is hardcoded. In production an exception is requested, approved, time-boxed, and reviewed, and the absence of that workflow is the reason landing zones erode.
-
-**No Cloud NAT, deliberately.** Private instances have no outbound internet here. NAT is the correct answer and is also the only always-on billed resource this design would have, at roughly $0.044 per gateway-hour plus data processing. Production budgets for it.
-
-**The findings topic has no subscriber.** The pipe is real, the consumer is not built. Findings accumulate and nothing triages them, which is honest rather than hidden.
-
-**One region, one environment pair.** Real orgs need multi-region networking, a hub-and-spoke or Network Connectivity Center topology, and more than two workload projects before the factory's value is proven.
-
-**No break-glass.** Removing key creation org-wide is correct until federation breaks and a human needs in. Production needs a documented, alerted, time-boxed exception path.
-
-## Teardown
-
-```bash
-cd terraform && terraform destroy
-cd ../bootstrap && terraform destroy   # set force_destroy_state = true first
-```
-
-GCP behaviors that make this non-obvious:
-
-**Importing a policy makes you its owner, and destroy then deletes it.** This is the sharpest trap in the whole build and it was hit for real. The three constraints Google pre-applied were imported to resolve the 409s, which handed Terraform ownership of policies it did not create. `terraform destroy` deleted them, leaving the organization *less protected than before the landing zone was ever applied*, with service account key creation newly permitted org-wide.
-
-They were restored manually afterwards:
-
-```bash
-for c in iam.disableServiceAccountKeyCreation iam.disableServiceAccountKeyUpload storage.uniformBucketLevelAccess; do
-  gcloud resource-manager org-policies enable-enforce "$c" --organization="${ORG_ID}"
-done
-```
-
-Adopting existing infrastructure is a two-way door only if you know which side you came in on. A production version tracks which constraints pre-existed and either leaves them unmanaged or guards them with `prevent_destroy`.
-
-**Org policies are deleted, not reverted.** Destroy removes the policy resources and the org returns to Google's defaults for anything Google set, and to no policy at all for anything it did not. There is no "previous state" that Terraform restores for you.
-
-**Folders must be empty.** A folder with a project in it, including one in `DELETE_REQUESTED`, blocks deletion. Terraform's dependency order handles this, but a manually created project in a managed folder will strand the destroy.
-
-**KMS key rings cannot be deleted, ever.** Destroy removes the ring from state and leaves it in the project. Deleting the seed project takes it with it. An empty ring costs nothing.
-
-**Deleted projects linger for 30 days** in `DELETE_REQUESTED` and their IDs are never reusable. They still appear in `gcloud projects list`, which looks like a failed teardown and is not one. Confirm lifecycle state and the billing link rather than absence of the row.
-
-**The log sink is org-level.** It is not deleted by deleting a project. Terraform removes it, but a partial destroy can leave an org sink writing to a dataset that no longer exists, which fails silently.
-
-## Deploy record
-
-Deployed, verified, and destroyed on 2026-08-10 against organization `jordandn13-org`.
-
-| Step | Result |
-|---|---|
-| Bootstrap | Seed project, state bucket, log bucket, audit config |
-| Landing zone | 52 resources: 4 folders, 9 org policy constraints, 3 vended projects, Shared VPC with 2 firewall rules, org sink, BigQuery dataset, CMEK key, 2 Pub/Sub topics, budget |
-| Inheritance proven | `prod` resolves `gcp.resourceLocations` to US value groups only; `nonprod` resolves to US plus europe and EU, from a child policy widening the inherited one |
-| Shared VPC | `gcloud compute shared-vpc get-host-project` on the workload project returns the host project |
-| Org sink | Delivering to BigQuery with `includeChildren = True` |
-| Key creation denied | `FAILED_PRECONDITION`, `constraints/iam.disableServiceAccountKeyCreation` |
-| Out-of-region denied | `HTTPError 412: 'asia-northeast1' violates constraint 'constraints/gcp.resourceLocations'` |
-| Not deployed | SCC notification config, blocked on org permissions beyond `notificationConfigEditor` |
-| Teardown | 52 then 18 resources destroyed. Zero folders remain, seed project `DELETE_REQUESTED` with billing unlinked, three pre-existing org policies restored by hand |
-| Cost | Under $0.20 for the full cycle |
+See [docs/cis-mapping.md](docs/cis-mapping.md),
+[docs/access-model.md](docs/access-model.md), and
+[docs/accelerator-vs-bespoke.md](docs/accelerator-vs-bespoke.md).

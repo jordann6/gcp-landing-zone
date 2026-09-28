@@ -15,4 +15,13 @@ terraform {
   }
 }
 
-provider "google" {}
+provider "google" {
+  # Inline literals, not a variable: the policy gate reads provider
+  # default_labels statically, and a variable reference is opaque to it.
+  default_labels = {
+    project     = "gcp-landing-zone"
+    owner       = "jordan"
+    managed-by  = "terraform"
+    cost_center = "cc-0001"
+  }
+}

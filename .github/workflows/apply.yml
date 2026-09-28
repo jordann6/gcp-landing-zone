@@ -1,0 +1,46 @@
+name: Apply (gated)
+
+# Reviewer-gated apply: the just-in-time-to-prod control expressed in CI. The
+# plan job impersonates sa-gha-plan (read-only); the apply job is bound to the
+# prod-apply environment, pauses for a required reviewer, and only then can
+# impersonate sa-terraform, because the bootstrap WIF binding for sa-terraform
+# matches on the token's environment claim. A workflow edited to skip the
+# environment gets a token without that claim and cannot reach the apply
+# identity. See bootstrap/wif.tf and tf-apply.yml in platform-guardrails.
+#
+# INACTIVE. Two things are needed first:
+#   1. platform-guardrails#2 merged and tagged v1.4.0 (it adds the GCP auth
+#      inputs used below)
+#   2. a CI backend config: backend.hcl is gitignored and carries
+#      impersonate_service_account, which CI must not use (CI already IS the
+#      service account). Commit a ci.backend.hcl with only `bucket = ...` and
+#      pass it to init, or give the shared workflow a backend_config input.
+# Then: make bootstrap, set repo variables GCP_WIF_PROVIDER, GCP_PLAN_SA,
+# GCP_APPLY_SA from its outputs, create the prod-apply environment with a
+# required reviewer, and add a push trigger.
+#
+# Until then applies run locally through make, as sa-terraform by impersonation.
+on:
+  workflow_dispatch:
+    inputs:
+      root:
+        description: Terraform root to apply
+        type: choice
+        options: [terraform, network, workload]
+        default: terraform
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    permissions:
+      contents: read
+      id-token: write
+    uses: jordann6/platform-guardrails/.github/workflows/tf-apply.yml@v1.4.0
+    with:
+      terraform_dir: ${{ inputs.root }}
+      environment: prod-apply
+      gcp_workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+      gcp_plan_service_account: ${{ vars.GCP_PLAN_SA }}
+      gcp_apply_service_account: ${{ vars.GCP_APPLY_SA }}

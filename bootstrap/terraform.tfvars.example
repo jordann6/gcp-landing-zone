@@ -9,3 +9,6 @@ billing_account = "000000-000000-000000"
 
 # Set true only for the final teardown.
 force_destroy_state = false
+
+# Who may impersonate sa-terraform. Every later root applies as that account.
+operators = ["user:you@example.com"]
