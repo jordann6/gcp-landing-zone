@@ -7,11 +7,14 @@
 #
 #   Tag enforcement. AWS uses a tag policy plus an SCP condition; Azure uses a
 #   Deny policy on missing tags. GCP has no predefined "require label", so a
-#   custom constraint rejects a GKE cluster or Cloud SQL instance that arrives
-#   without a cost_center label. Spend that cannot be allocated never exists.
+#   custom constraint rejects a GKE cluster that arrives without a cost_center
+#   label. Spend that cannot be allocated never exists. Cloud SQL does not
+#   expose its labels to custom constraints, so SQL labels are enforced in
+#   review by policy/gcp_lz.rego instead of at the API.
 #
-#   Paved-road invariants. A GKE cluster with public nodes is rejected at the
-#   API, not caught in review, and not left to whoever writes the next cluster.
+#   Paved-road invariants. A GKE cluster with public nodes, or a Cloud SQL
+#   instance with a public IP, is rejected at the API, not caught in review, and
+#   not left to whoever writes the next one.
 #
 # Attached at the org so a cluster in a project outside the landing zone is
 # still governed.
@@ -30,11 +33,11 @@ locals {
       resource_types = ["container.googleapis.com/Cluster"]
       condition      = "'cost_center' in resource.resourceLabels"
     }
-    sqlRequireCostCenterLabel = {
-      display_name   = "Cloud SQL instances must carry a cost_center label"
-      description    = "Spend that cannot be allocated to a cost centre is rejected at creation."
+    sqlRequirePrivateIp = {
+      display_name   = "Cloud SQL instances must not have a public IP"
+      description    = "Rejects an instance with a public IPv4 address. Access is private IP over the Shared VPC only."
       resource_types = ["sqladmin.googleapis.com/Instance"]
-      condition      = "'cost_center' in resource.settings.userLabels"
+      condition      = "resource.settings.ipConfiguration.ipv4Enabled == false"
     }
   }
 }

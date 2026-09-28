@@ -151,7 +151,11 @@ resource "google_container_cluster" "paved_road" {
   }
 
   lifecycle {
-    ignore_changes = [node_config]
+    # GKE now reports application-layer secrets encryption on new clusters as
+    # ALL_OBJECTS_ENCRYPTION_ENABLED, a value the provider does not accept in
+    # config (only ENCRYPTED or DECRYPTED). Same encryption, new name; without
+    # this every plan re-sends ENCRYPTED. key_name is still tracked.
+    ignore_changes = [node_config, database_encryption[0].state]
   }
 
   depends_on = [

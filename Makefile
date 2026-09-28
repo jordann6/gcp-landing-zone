@@ -71,6 +71,14 @@ wire: ## Write backend.hcl + lz.auto.tfvars into each root from bootstrap output
 
 .PHONY: deploy
 deploy: ## Governance root: hierarchy, org policy, identity, logging, detect (nearly free)
+	@SA=$$(terraform -chdir=$(TF_BOOT) output -raw terraform_service_account); \
+	 SEED=$$(terraform -chdir=$(TF_BOOT) output -raw seed_project_id); \
+	 ORG=$$(terraform -chdir=$(TF_BOOT) output -raw org_id 2>/dev/null || sed -n 's/^org_id *= *"\(.*\)"/\1/p' $(TF_GOV)/terraform.tfvars); \
+	 echo "==> Provisioning the PAM org service agent (as $$SA)"; \
+	 curl -sf -o /dev/null -H "Authorization: Bearer $$(gcloud auth print-access-token --impersonate-service-account=$$SA 2>/dev/null)" \
+		-H "x-goog-user-project: $$SEED" \
+		"https://privilegedaccessmanager.googleapis.com/v1/organizations/$$ORG/locations/global:checkOnboardingStatus" \
+		|| echo "    (onboarding check failed; the pam_agent grant will fail next if the agent is missing)"
 	terraform -chdir=$(TF_GOV) init -backend-config=backend.hcl -reconfigure
 	terraform -chdir=$(TF_GOV) apply
 

@@ -221,6 +221,12 @@ variable "break_glass_members" {
   default     = []
 }
 
+variable "manage_billing_iam" {
+  description = "Grant the finops and manager personas their billing-account roles. Needs sa-terraform to hold billing.admin on the account, so off unless the account is dedicated to the landing zone."
+  type        = bool
+  default     = false
+}
+
 variable "enable_pam" {
   description = "Create Privileged Access Manager entitlements for approver-gated, time-boxed prod write."
   type        = bool

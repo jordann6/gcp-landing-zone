@@ -6,9 +6,12 @@ implemented** say why, rather than being left out.
 
 Scored CIS reporting (the Security Health Analytics compliance dashboard) needs
 Security Command Center Premium or Enterprise, which are priced against total
-asset spend. This build runs SCC Standard (free) live and treats Premium as the
-production design, the same way Shield Advanced is documented-only in the AWS
-zone. The controls below are enforced whether or not anything is scoring them.
+asset spend. This build wires SCC Standard (free) findings to Pub/Sub and
+treats Premium as the production design, the same way Shield Advanced is
+documented-only in the AWS zone. Activating SCC for an organization is a
+console-only step with no API or Terraform resource, so the findings stream is
+gated by `enable_scc_notifications` and was off in the recorded deploy. The
+controls below are enforced whether or not anything is scoring them.
 
 ## 1. Identity and Access Management
 
@@ -106,7 +109,8 @@ zone. The controls below are enforced whether or not anything is scoring them.
 | Control | Implementation |
 |---|---|
 | Prod requires CMEK | `gcp.restrictNonCmekServices` on the prod folder only |
-| Label (cost_center) enforcement | Custom constraints on GKE clusters and Cloud SQL (`terraform/custom_constraints.tf`) |
+| Label (cost_center) enforcement | Custom constraint on GKE clusters (`terraform/custom_constraints.tf`); Cloud SQL labels in review via `policy/gcp_lz.rego` (the SQL API does not expose labels to custom constraints) |
+| Cloud SQL private IP only | Custom constraint `custom.sqlRequirePrivateIp` (`terraform/custom_constraints.tf`) |
 | Data exfiltration boundary | VPC Service Controls perimeter around the restricted tier (`network/vpc_sc.tf`) |
 | Egress allowlist | Cloud NGFW Standard FQDN rules, default-deny egress (`network/firewall.tf`) |
 | Threat-intel deny | `iplist-known-malicious-ips` both directions at the org |

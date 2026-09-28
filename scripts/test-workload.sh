@@ -8,6 +8,12 @@
 # shellcheck source=scripts/lib.sh
 source "$(dirname "$0")/lib.sh"
 
+# Run as sa-terraform throughout. The operator holds no standing access in prod
+# and sits outside the VPC-SC perimeter by design, so as the operator this
+# script could neither fetch cluster credentials nor sign with the KMS
+# attestor. The env property also reaches kubectl through gke-gcloud-auth-plugin.
+export CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT="$SA"
+
 PROJECT="$(tfout workload project_id)"
 CLUSTER="$(tfjson workload cluster)"
 C_NAME="$(jq -r .name <<<"$CLUSTER")"
@@ -34,7 +40,8 @@ fi
 
 PRIV="$(gcloud container clusters describe "$C_NAME" --zone="$C_ZONE" --project="$PROJECT" --format=json)"
 jq -e '.privateClusterConfig.enablePrivateNodes == true' >/dev/null <<<"$PRIV" && ok "private nodes" || bad "nodes are not private"
-jq -e '.databaseEncryption.state == "ENCRYPTED"' >/dev/null <<<"$PRIV" && ok "etcd secrets envelope-encrypted with Cloud KMS" || bad "application-layer secrets encryption off"
+# New clusters report ALL_OBJECTS_ENCRYPTION_ENABLED; older ones ENCRYPTED.
+jq -e '(.databaseEncryption.state | IN("ENCRYPTED", "ALL_OBJECTS_ENCRYPTION_ENABLED")) and .databaseEncryption.keyName != null' >/dev/null <<<"$PRIV" && ok "etcd secrets envelope-encrypted with Cloud KMS" || bad "application-layer secrets encryption off"
 jq -e '.networkConfig.datapathProvider == "ADVANCED_DATAPATH"' >/dev/null <<<"$PRIV" && ok "Dataplane V2 (native NetworkPolicy)" || bad "Dataplane V2 off"
 jq -e '.workloadIdentityConfig.workloadPool != null' >/dev/null <<<"$PRIV" && ok "Workload Identity pool set" || bad "no Workload Identity"
 
@@ -60,6 +67,7 @@ expect_denied "unsigned image rejected at admission" "Binary Authorization|denie
 	kubectl -n app run unsigned-"$(date +%s)" --image="$PG_TAG" --restart=Never \
 	--overrides="$(restricted_pod "$PG_TAG" '["true"]')"
 
+PG_IMAGE="" SDK_IMAGE=""
 PG_IMAGE="$("$ROOT/scripts/sign-image.sh" "$PG_TAG")" && SDK_IMAGE="$("$ROOT/scripts/sign-image.sh" "$SDK_TAG")"
 if [ -n "${PG_IMAGE:-}" ] && [ -n "${SDK_IMAGE:-}" ]; then
 	ok "digests attested with the KMS-backed attestor"

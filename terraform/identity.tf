@@ -118,8 +118,13 @@ resource "google_folder_iam_member" "persona" {
 }
 
 # FinOps reads cost at the billing account, which sits outside the hierarchy.
+# Setting IAM on a billing account takes billing.admin there, which would let
+# the apply identity grant anyone spend on every project the account pays for.
+# sa-terraform deliberately holds only billing.user and costsManager, so these
+# grants are off unless the account is dedicated to the landing zone and
+# sa-terraform has been given billing.admin on it.
 resource "google_billing_account_iam_member" "finops" {
-  for_each = toset(["roles/billing.viewer", "roles/billing.costsManager"])
+  for_each = var.manage_billing_iam ? toset(["roles/billing.viewer", "roles/billing.costsManager"]) : toset([])
 
   billing_account_id = var.billing_account
   role               = each.value
@@ -127,6 +132,8 @@ resource "google_billing_account_iam_member" "finops" {
 }
 
 resource "google_billing_account_iam_member" "manager" {
+  count = var.manage_billing_iam ? 1 : 0
+
   billing_account_id = var.billing_account
   role               = "roles/billing.viewer"
   member             = local.persona_principal["manager"]
@@ -173,8 +180,33 @@ locals {
   }
 }
 
+# PAM grants and revokes roles as its org service agent, not as the requester
+# or as sa-terraform. The agent only exists once checkOnboardingStatus has been
+# called against the org (make deploy does that as sa-terraform), and an
+# entitlement fails to create until the agent can edit IAM where it grants.
+# organizationServiceAgent covers the org's own policy only; folder-scoped
+# entitlements (prod-write) also need folderServiceAgent, granted here at the
+# org so it reaches every folder, including ones vended later.
+resource "google_organization_iam_member" "pam_agent" {
+  for_each = var.enable_pam ? toset([
+    "roles/privilegedaccessmanager.organizationServiceAgent",
+    "roles/privilegedaccessmanager.folderServiceAgent",
+  ]) : toset([])
+
+  org_id = var.org_id
+  role   = each.value
+  member = "serviceAccount:service-org-${var.org_id}@gcp-sa-pam.iam.gserviceaccount.com"
+}
+
+moved {
+  from = google_organization_iam_member.pam_agent[0]
+  to   = google_organization_iam_member.pam_agent["roles/privilegedaccessmanager.organizationServiceAgent"]
+}
+
 resource "google_privileged_access_manager_entitlement" "this" {
   for_each = var.enable_pam ? local.pam_entitlements : {}
+
+  depends_on = [google_organization_iam_member.pam_agent]
 
   entitlement_id       = each.key
   location             = "global"

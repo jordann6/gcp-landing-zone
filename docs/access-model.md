@@ -22,9 +22,9 @@ write in prod. Source of truth: `terraform/identity.tf`.
 | junior_eng | test folder | viewer | | 1.6 |
 | junior_eng | prod | none | none | 1.6 |
 | manager | workloads folder | browser, monitoring.viewer | | 1.6 |
-| manager | billing account | billing.viewer | | |
+| manager | billing account | billing.viewer (when manage_billing_iam) | | |
 | finops | org | organizationViewer, recommender.viewer | | |
-| finops | billing account | billing.viewer, billing.costsManager | | |
+| finops | billing account | billing.viewer, billing.costsManager (when manage_billing_iam) | | |
 | security | org | iam.securityReviewer, securitycenter.adminViewer, orgpolicy.policyViewer, accesscontextmanager.policyReader, cloudasset.viewer | approves all PAM grants | 1.8, 1.11 |
 | security | logging project | logging.privateLogViewer, bigquery.dataViewer, bigquery.jobUser | | 2.x |
 | platform_eng, junior_eng | sandbox folder | editor | | |

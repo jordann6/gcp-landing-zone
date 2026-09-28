@@ -36,15 +36,17 @@ locals {
   }
 
   # Which service agent encrypts with which key. Each agent acts as itself, not
-  # as the caller, so each needs its own grant.
-  key_users = {
-    gke-secrets = ["serviceAccount:service-${local.number}@container-engine-robot.iam.gserviceaccount.com"]
-    gke-disk    = ["serviceAccount:service-${local.number}@compute-system.iam.gserviceaccount.com"]
-    sql         = [google_project_service_identity.agents["sqladmin.googleapis.com"].member]
-    secrets     = [google_project_service_identity.agents["secretmanager.googleapis.com"].member]
-    registry    = [google_project_service_identity.agents["artifactregistry.googleapis.com"].member]
-    storage     = ["serviceAccount:${data.google_storage_project_service_account.gcs.email_address}"]
-    pubsub      = [google_project_service_identity.agents["pubsub.googleapis.com"].member]
+  # as the caller, so each needs its own grant. One agent per key, and the IAM
+  # resource is keyed on the key name: several of these emails are only known
+  # after apply, so they cannot be part of a for_each key.
+  key_user = {
+    gke-secrets = "serviceAccount:service-${local.number}@container-engine-robot.iam.gserviceaccount.com"
+    gke-disk    = "serviceAccount:service-${local.number}@compute-system.iam.gserviceaccount.com"
+    sql         = google_project_service_identity.agents["sqladmin.googleapis.com"].member
+    secrets     = google_project_service_identity.agents["secretmanager.googleapis.com"].member
+    registry    = google_project_service_identity.agents["artifactregistry.googleapis.com"].member
+    storage     = "serviceAccount:${data.google_storage_project_service_account.gcs.email_address}"
+    pubsub      = google_project_service_identity.agents["pubsub.googleapis.com"].member
   }
 }
 
@@ -78,15 +80,11 @@ resource "google_kms_crypto_key" "sql_replica" {
 }
 
 resource "google_kms_crypto_key_iam_member" "workload" {
-  for_each = merge([
-    for key, members in local.key_users : {
-      for m in members : "${key}/${m}" => { key = key, member = m }
-    }
-  ]...)
+  for_each = local.keys
 
-  crypto_key_id = google_kms_crypto_key.workload[each.value.key].id
+  crypto_key_id = google_kms_crypto_key.workload[each.key].id
   role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
-  member        = each.value.member
+  member        = local.key_user[each.key]
 
   depends_on = [time_sleep.agents]
 }
