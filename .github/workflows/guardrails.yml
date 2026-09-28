@@ -5,18 +5,83 @@ on:
     branches: [main]
   pull_request:
 
+# The static half is credential-free by design: everything here analyses
+# Terraform that, on a pull_request, was written by whoever opened the PR, so no
+# job in this file holds a permission that can mint a cloud token. Same shared
+# toolkit and the same gates as the AWS and Azure landing zones: gitleaks over
+# full history, fmt + validate, lock-file assertion, tflint, Checkov, Trivy, and
+# conftest.
+#
+# One static job per Terraform root, as in the AWS repo (governance, network,
+# workload), plus bootstrap.
+#
+# Policy: the shared conftest suite carries GCP rules as of v1.4.0
+# (platform-guardrails#2), so each root's shared job runs them alongside this
+# repo's policy/ rules. repo_policy below also runs the repo rules on their own
+# and proves the violations fixture still fails.
 permissions:
   contents: read
 
 jobs:
-  static:
-    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1
-    with:
-      terraform_dir: terraform
-      skip_policy: true
-
-  bootstrap:
-    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1
+  static_bootstrap:
+    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.4.0
     with:
       terraform_dir: bootstrap
-      skip_policy: true
+      skip_policy: false
+
+  static:
+    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.4.0
+    with:
+      terraform_dir: terraform
+      skip_policy: false
+
+  static_network:
+    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.4.0
+    with:
+      terraform_dir: network
+      skip_policy: false
+
+  static_workload:
+    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.4.0
+    with:
+      terraform_dir: workload
+      skip_policy: false
+
+  # This repo's own rules (policy/gcp_lz.rego) over every root, and the guard on
+  # the guard: the violations fixture must FAIL, or the rules have gone vacuous.
+  # A Rego rule whose first line stops matching the input returns no
+  # violations, which is indistinguishable from a clean run.
+  repo_policy:
+    name: Repo policy (conftest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install conftest
+        run: |
+          VERSION=0.56.0
+          curl -sSL "https://github.com/open-policy-agent/conftest/releases/download/v${VERSION}/conftest_${VERSION}_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin conftest
+
+      - name: Roots pass the repo rules
+        run: |
+          for d in bootstrap terraform network workload; do
+            echo "==> $d"
+            conftest test --parser hcl2 --combine --policy policy \
+              $(find "$d" -name '*.tf' -not -path '*/.terraform/*')
+          done
+
+      - name: Violations fixture is blocked
+        run: |
+          if conftest test --parser hcl2 --combine --policy policy policy/fixtures/violations.tf; then
+            echo "::error::policy/fixtures/violations.tf passed. The repo rules have gone vacuous."
+            exit 1
+          fi
+          echo "Violations fixture blocked as expected."
+
+  shell:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck -x scripts/*.sh

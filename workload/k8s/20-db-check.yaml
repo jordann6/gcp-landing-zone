@@ -1,0 +1,69 @@
+# The paved road, end to end, in one Job:
+#   1. the init container reads the DB password from Secret Manager as the app
+#      KSA through Workload Identity (no key, no Kubernetes Secret)
+#   2. the main container connects to Cloud SQL over private IP with TLS required
+# Both images come from the Artifact Registry virtual repo and are admitted only
+# because scripts/sign-image.sh attested their digests. The pod runs under the
+# restricted Pod Security Standard.
+#
+# Rendered by scripts/test-workload.sh.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-check
+  namespace: app
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        tier: app
+    spec:
+      serviceAccountName: app
+      restartPolicy: Never
+      # Workload Identity tokens come from the GKE metadata server, not from a
+      # mounted Kubernetes token, so the pod does not need one.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: shared
+          emptyDir: { medium: Memory }
+        - name: tmp
+          emptyDir: {}
+      initContainers:
+        - name: fetch-secret
+          image: ${SDK_IMAGE}
+          command: ["sh", "-c"]
+          args:
+            - gcloud secrets versions access latest --secret=app-db-password --project=${PROJECT} > /shared/pw && echo fetched
+          env:
+            # gcloud writes its config under HOME; the root filesystem is read-only.
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/gcloud }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: shared, mountPath: /shared }
+            - { name: tmp, mountPath: /tmp }
+      containers:
+        - name: psql
+          image: ${PG_IMAGE}
+          command: ["sh", "-c"]
+          args:
+            - PGPASSWORD="$(cat /shared/pw)" psql "host=${DB_IP} dbname=app user=app sslmode=require connect_timeout=10" -Atc "select 'connected over ' || (select case when ssl then 'tls' else 'plaintext' end from pg_stat_ssl where pid = pg_backend_pid())"
+          env:
+            - { name: HOME, value: /tmp }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: shared, mountPath: /shared }
+            - { name: tmp, mountPath: /tmp }

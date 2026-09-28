@@ -33,3 +33,6 @@ venv/
 
 # macOS
 .DS_Store
+
+# Shared policy checkout used by make policy.
+.guardrails-src/
