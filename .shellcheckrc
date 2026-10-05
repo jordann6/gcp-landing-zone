@@ -1,0 +1,3 @@
+# SC2015: `check && ok || bad` is safe here; ok() always returns 0.
+# SC2016: single-quoted envsubst variable lists are intentional (they name, not expand).
+disable=SC2015,SC2016

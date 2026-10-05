@@ -1,22 +1,24 @@
 # Customer-managed encryption for the centralized telemetry.
 #
-# The audit dataset and the findings topic are the two places in this build that
-# accumulate sensitive material: who did what, and what the scanner thinks is
-# wrong. Both are encrypted with one key, so a single disable revokes read
+# The audit dataset and the two Pub/Sub topics (SCC findings, budget alerts) are
+# where this layer accumulates sensitive material: who did what, and what the
+# scanner thinks is wrong. They share one key, so a single disable revokes read
 # access to the org's entire audit trail and finding stream at once, with no IAM
 # edit and nothing deleted.
 #
-# One key ring, one region, shared by BigQuery and Pub/Sub. Both services
-# require the key to be co-located with the resource, which is why the dataset
-# defaults to a region rather than the US multi-region.
+# The key lives in the logging project, next to what it protects, not in the
+# seed: the seed holds only what is needed to rebuild the org.
+#
+# BigQuery and Pub/Sub both require the key to be co-located with the resource,
+# which is why the dataset defaults to a region rather than the US multi-region.
 
 resource "google_kms_key_ring" "telemetry" {
-  project = var.seed_project_id
+  project = module.logging_project.project_id
   name    = "telemetry"
 
   # Key rings are permanent: they cannot be deleted or moved, and the location
   # is fixed at creation. Destroy removes it from state and leaves it in place,
-  # costing nothing. Documented in the README teardown section.
+  # costing nothing. Deleting the logging project takes it with it.
   location = var.region
 }
 
@@ -41,8 +43,8 @@ resource "google_kms_crypto_key" "telemetry" {
 }
 
 # Each service encrypts as its own service agent, not as the caller, so each
-# needs its own grant on the key. A missing grant here fails the resource
-# creation outright rather than silently falling back to Google-managed keys.
+# needs its own grant on the key. A missing grant fails the resource creation
+# outright rather than silently falling back to Google-managed keys.
 data "google_bigquery_default_service_account" "logging" {
   project = module.logging_project.project_id
 }
@@ -53,12 +55,10 @@ resource "google_kms_crypto_key_iam_member" "bigquery_agent" {
   member        = "serviceAccount:${data.google_bigquery_default_service_account.logging.email}"
 }
 
-data "google_project" "seed" {
-  project_id = var.seed_project_id
-}
-
+# The Pub/Sub service agent is provisioned when the API is enabled, which the
+# project factory does before this grant can run.
 resource "google_kms_crypto_key_iam_member" "pubsub_agent" {
   crypto_key_id = google_kms_crypto_key.telemetry.id
   role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
-  member        = "serviceAccount:service-${data.google_project.seed.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+  member        = "serviceAccount:service-${module.logging_project.project_number}@gcp-sa-pubsub.iam.gserviceaccount.com"
 }

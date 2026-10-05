@@ -1,0 +1,16 @@
+# Namespace for the paved-road demo, enforcing the restricted Pod Security
+# Standard: non-root, no privilege escalation, all capabilities dropped,
+# RuntimeDefault seccomp. The db-check Job is written to pass it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app
+  namespace: app

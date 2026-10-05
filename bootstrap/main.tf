@@ -12,20 +12,40 @@ resource "random_id" "suffix" {
 locals {
   seed_project_id = "${var.name_prefix}-seed-${random_id.suffix.hex}"
 
+  # The seed project is the quota project for every call the landing zone makes
+  # (billing_project + user_project_override in each root), so any API a root
+  # touches has to be enabled here, not only in the project that holds the
+  # resource. Enabling an API is free; a missing one fails with SERVICE_DISABLED
+  # on a project ID that does not look related to the resource being created.
   seed_apis = [
+    "accesscontextmanager.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "backupdr.googleapis.com",
     "bigquery.googleapis.com",
     "billingbudgets.googleapis.com",
+    "binaryauthorization.googleapis.com",
     "cloudbilling.googleapis.com",
     "cloudkms.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "compute.googleapis.com",
+    "container.googleapis.com",
+    "containeranalysis.googleapis.com",
+    "dns.googleapis.com",
+    "essentialcontacts.googleapis.com",
     "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
     "logging.googleapis.com",
+    "monitoring.googleapis.com",
     "orgpolicy.googleapis.com",
+    "privilegedaccessmanager.googleapis.com",
     "pubsub.googleapis.com",
+    "secretmanager.googleapis.com",
     "securitycenter.googleapis.com",
+    "servicenetworking.googleapis.com",
     "serviceusage.googleapis.com",
+    "sqladmin.googleapis.com",
     "storage.googleapis.com",
+    "sts.googleapis.com",
   ]
 }
 
