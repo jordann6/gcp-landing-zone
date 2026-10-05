@@ -11,7 +11,7 @@ plus Cloud SQL paved road that proves the controls hold for a real workload.
 It is one of three standalone landing zones (AWS, Azure, GCP) built to the same
 design: the same tiers, the same `10.x` address plan, the same pipeline, and no
 connectivity between them. Canonical design:
-`aws-scp-governance/docs/multicloud-networking-design.md`.
+`aws-landing-zone/docs/multicloud-networking-design.md`.
 
 **Cost:** under $0.50/month standing. A full deploy, test, and destroy session is
 about $2 to $5. Every hourly resource lives in a root that is torn down on its own.

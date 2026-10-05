@@ -7,7 +7,7 @@
 # what a workload team owns, and every control it relies on is one it could not
 # switch off if it tried.
 #
-# Mirrors aws-scp-governance/workload (EKS + RDS Multi-AZ) and
+# Mirrors aws-landing-zone/workload (EKS + RDS Multi-AZ) and
 # azure-landing-zone/workload (AKS + PostgreSQL HA): same contract, GCP-native
 # mechanisms.
 

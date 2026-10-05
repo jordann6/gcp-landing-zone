@@ -10,7 +10,7 @@ TARGET CLOUD: AWS
 (For the Azure build, change the line above to "TARGET CLOUD: Azure"; for GCP, "TARGET CLOUD: GCP". Build only the target cloud in this chat, using the matching PER-CLOUD block below.)
 
 FIRST STEP: Read the canonical design reference at
-/Users/jordannelson/aws-scp-governance/docs/multicloud-networking-design.md
+/Users/jordannelson/aws-landing-zone/docs/multicloud-networking-design.md
 It is the single source of truth. If anything here conflicts with it, the doc wins. If the file is missing, use the summary below.
 
 STRATEGY SUMMARY (all three zones follow the same shape):
@@ -123,4 +123,4 @@ BUILD ORDER FOR THIS CLOUD:
 7. Supply chain + (if this is the live-k8s cloud) the paved-road cluster demo.
 8. Deliverables: make deploy/test/destroy, docs/architecture.png (+ diagram.py), cis-mapping.md, access-model.md, accelerator-vs-bespoke note, and the README.
 
-Start by reading the design doc and the current state of the target cloud's repo, then propose a build plan for phase 1 (pipeline wiring) before writing code. My AWS repo today is aws-scp-governance (SCPs + org only, no networking yet); Azure is azure-landing-zone; GCP is gcp-landing-zone.
+Start by reading the design doc and the current state of the target cloud's repo, then propose a build plan for phase 1 (pipeline wiring) before writing code. My AWS repo today is aws-landing-zone (SCPs + org only, no networking yet); Azure is azure-landing-zone; GCP is gcp-landing-zone.
