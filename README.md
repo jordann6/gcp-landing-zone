@@ -139,6 +139,22 @@ private IP, TLS-only, CMEK, with PITR and a cross-region replica in us-east1.
 Only the GKE nodes' service account reaches the PSA range on 5432; NetworkPolicy
 narrows that to `tier=app` pods.
 
+## State backend
+
+`bootstrap/` creates the bucket every other root stores state in. The bucket
+belongs to this landing zone alone, sits in the seed project outside the
+hierarchy it manages, and is hardened in code (`bootstrap/main.tf`).
+Bootstrap's own state is local on purpose (gitignored), because it creates the
+bucket.
+
+| Control | How it is met here |
+|---|---|
+| Destruction protection | `force_destroy = var.force_destroy_state`, default `false`, so a destroy fails while state objects exist. `prevent_destroy` is deliberately absent: bootstrap is torn down at the end of every session, and `prevent_destroy` would block that. Final teardown sets `force_destroy_state = true` explicitly. |
+| Versioning and recovery | Object versioning on, with a lifecycle rule that keeps the 20 newest noncurrent versions. GCS's default 7-day soft delete also applies, because the bucket does not override it. |
+| Encryption | Google-managed keys. A CMEK on the state bucket is an option, but the key ring would outlive every session (key rings cannot be deleted), so it is documented, not built. |
+| Access and transport | Uniform bucket-level access and enforced public access prevention. GCS only serves TLS, so there is no plaintext path to block. Every root reaches the bucket by impersonating `sa-terraform`, not with user credentials. Access logs land in a separate `-tfstate-logs` bucket with 90-day retention. |
+| State locking | Native GCS locking in the `gcs` backend. No separate lock table. |
+
 ## Deploy
 
 Requires an org and an open billing account. Bootstrap runs as you and needs
