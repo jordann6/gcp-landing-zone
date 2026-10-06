@@ -1,5 +1,17 @@
 # GCP Landing Zone
 
+**Compute baseline status:** live bake paused pending an approved private package
+mirror or egress path. Public IPs and hourly NAT are excluded. The planned addition is a golden
+image baked with the shared `cis_baseline` Ansible role, trusted-image policy,
+and one private management VM using IAP and OS Login. Image baking and live guest
+hardening have not yet been proven for this landing zone. Existing live-test
+counts below cover the earlier governance and workload demo. GKE node settings
+will be validated statically during the compute-only session.
+
+The sibling Packer template uses IAP for SSH but a public IP for package egress.
+It cannot be reused unchanged for this private bake. See
+[the private-bake checkpoint](docs/compute-baseline-checkpoint.md).
+
 An organization built as code to Google's security foundations blueprint: five
 governed tiers, org policy and custom constraints at the root, per-environment
 base and restricted Shared VPCs behind a VPC Service Controls perimeter,

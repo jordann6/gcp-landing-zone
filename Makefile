@@ -104,19 +104,14 @@ test-workload: ## Prove the paved road: admission, WI, segmentation, CMEK, failo
 
 .PHONY: destroy-workload
 destroy-workload: ## Tear down GKE, Cloud SQL, registry, keys (first)
-	kubectl delete namespace app --ignore-not-found --wait=true 2>/dev/null || true
-	terraform -chdir=$(TF_WORK) destroy
+	terraform -chdir=$(TF_WORK) plan -destroy -input=false -out=tfplan
+	terraform -chdir=$(TF_WORK) apply -input=false tfplan
 
 .PHONY: destroy-network
 destroy-network: ## Tear down NAT, PSC, firewall policies, VPC-SC, probe
-	terraform -chdir=$(TF_NET) destroy
+	terraform -chdir=$(TF_NET) plan -destroy -input=false -out=tfplan
+	terraform -chdir=$(TF_NET) apply -input=false tfplan
 
 .PHONY: destroy
 destroy: ## Tear everything down in order, then verify nothing hourly survives
-	-@$(MAKE) --no-print-directory destroy-workload
-	-@$(MAKE) --no-print-directory destroy-network
-	terraform -chdir=$(TF_GOV) destroy
-	@echo "==> Verifying teardown"
-	scripts/verify-teardown.sh
-	@echo "==> Bootstrap (seed + state) is left in place. Remove it last with:"
-	@echo "    terraform -chdir=$(TF_BOOT) destroy   (force_destroy_state = true first)"
+	bash scripts/destroy-session.sh "$(TF_WORK)" "$(TF_NET)" "$(TF_GOV)"
