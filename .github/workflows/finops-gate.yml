@@ -1,0 +1,103 @@
+name: Landing zone cost gate
+
+# Shared tf-ci already enforces labels and cost_center through OPA. This cost
+# gate stays local, as in aws-landing-zone, for two reasons: the threshold
+# check (scripts/check-cost.py) fails closed on a missing or malformed report,
+# where the shared workflow's jq fallback would read it as $0 and pass, and a
+# root that does not exist on the base branch (a new root) gets a zero
+# baseline instead of a failed estimate. Hosted Infracost policies are switched
+# off so they cannot define this repo's label rules. Infracost parses HCL, so
+# this job needs no cloud credentials and no plan.
+on:
+  workflow_call:
+    inputs:
+      terraform_dir:
+        type: string
+        required: true
+      max_monthly_increase:
+        type: string
+        default: "50"
+    secrets:
+      INFRACOST_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  cost:
+    name: Cost threshold (Infracost)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    defaults:
+      run:
+        shell: bash
+    env:
+      TF_ROOT: ${{ inputs.terraform_dir }}
+      INFRACOST_ENABLE_CLOUD: "false"
+      INFRACOST_ENABLE_CLOUD_UPLOAD: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test cost gate
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Setup Infracost
+        uses: infracost/actions/setup@v3
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+          version: "0.10.46"
+
+      - name: Baseline cost (base commit)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch origin "$BASE_SHA" --depth=1
+          git worktree add --detach "$RUNNER_TEMP/cost-base" FETCH_HEAD
+          base_root="$RUNNER_TEMP/cost-base/$TF_ROOT"
+          if [ -d "$base_root" ]; then
+            infracost breakdown --path "$base_root" --format json \
+              --out-file "$RUNNER_TEMP/cost-base.json"
+          else
+            # A newly added root has a zero baseline, not a failed estimate.
+            printf '%s\n' '{"version":"0.2","currency":"USD","projects":[],"totalMonthlyCost":"0"}' \
+              > "$RUNNER_TEMP/cost-base.json"
+          fi
+
+      - name: Cost diff
+        id: cost_diff
+        run: |
+          infracost diff --path "$TF_ROOT" \
+            --compare-to "$RUNNER_TEMP/cost-base.json" --format json \
+            --out-file "$RUNNER_TEMP/cost-diff.json"
+
+      - name: Enforce threshold
+        env:
+          COST_LIMIT: ${{ inputs.max_monthly_increase }}
+          APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'cost-approved') }}
+        run: |
+          python3 scripts/check-cost.py "$RUNNER_TEMP/cost-diff.json" \
+            --limit "$COST_LIMIT" --approved "$APPROVED" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on PR
+        # Post the report even when the threshold fails. Reporting never skips
+        # cost enforcement, and hosted policy settings cannot change its result.
+        if: ${{ !cancelled() && steps.cost_diff.outcome == 'success' }}
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          infracost comment github --path "$RUNNER_TEMP/cost-diff.json" \
+            --repo "$GITHUB_REPOSITORY" --pull-request "$PR_NUMBER" \
+            --github-token "$GH_TOKEN" --behavior update \
+            --tag "infracost-$TF_ROOT"
+
+      - name: Save cost report
+        if: ${{ !cancelled() && steps.cost_diff.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cost-${{ inputs.terraform_dir }}
+          path: ${{ runner.temp }}/cost-diff.json
+          retention-days: 7

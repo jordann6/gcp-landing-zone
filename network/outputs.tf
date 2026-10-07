@@ -47,3 +47,8 @@ output "org_firewall_policy" {
   description = "Org-level hierarchical firewall policy ID."
   value       = google_compute_firewall_policy.org.name
 }
+
+output "quarantine_tags" {
+  description = "Secure tag value per restricted VPC (tagValues/ID). The incident handler binds it to a VM to isolate it."
+  value       = { for k, v in google_tags_tag_value.quarantine : k => v.id }
+}

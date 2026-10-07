@@ -1,0 +1,9 @@
+---
+# Packer's Ansible entry point for the GCP bake. The role comes from the pinned
+# azure-vm-hardening tag (ANSIBLE_ROLES_PATH), the same release the Azure and
+# AWS zones bake.
+- name: Apply the cis_baseline hardening role
+  hosts: all
+  become: true
+  roles:
+    - cis_baseline

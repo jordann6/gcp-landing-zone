@@ -22,8 +22,13 @@ resource "google_backup_dr_backup_vault" "sql" {
   ignore_inactive_datasources   = true
   ignore_backup_plan_references = true
   allow_missing                 = true
-  backup_retention_inheritance  = "INHERIT_VAULT_RETENTION"
   access_restriction            = "WITHIN_ORGANIZATION"
+
+  # The API rejects any update that carries this field as non-updatable. It is
+  # left at its default (INHERIT_VAULT_RETENTION), so never send it.
+  lifecycle {
+    ignore_changes = [backup_retention_inheritance]
+  }
 }
 
 resource "google_backup_dr_backup_plan" "sql" {

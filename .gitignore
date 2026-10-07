@@ -36,3 +36,8 @@ venv/
 
 # Shared policy checkout used by make policy.
 .guardrails-src/
+
+# Packer
+packer/manifest.json
+packer/packer.log
+packer_cache/

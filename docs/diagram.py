@@ -12,9 +12,9 @@ governs what, and which single node relaxes an inherited rule.
 
 from diagrams import Cluster, Diagram, Edge
 from diagrams.gcp.analytics import BigQuery, PubSub
-from diagrams.gcp.compute import GKE, BinaryAuthorization, ComputeEngine
+from diagrams.gcp.compute import GKE, BinaryAuthorization, ComputeEngine, OSPatchManagement, Run
 from diagrams.gcp.database import SQL
-from diagrams.gcp.devtools import GCR
+from diagrams.gcp.devtools import GCR, Scheduler
 from diagrams.gcp.management import Billing, Project
 from diagrams.gcp.network import DNS, NAT, VPN, FirewallRules, PrivateServiceConnect, VirtualPrivateCloud
 from diagrams.gcp.operations import Logging, Monitoring
@@ -90,6 +90,18 @@ with Diagram(
         tkms = KMS("telemetry key")
         budget = Billing("budgets\norg + sandbox")
 
+    with Cluster("Compute baseline (image + compute roots)"):
+        mirror = GCR("Artifact Registry\nUbuntu mirror\nbake VPC, no route")
+        golden = ComputeEngine("golden image\ncis_baseline v2.0.1")
+        mgmt = ComputeEngine("prod-mgmt VM\nIAP + OS Login\nno external IP")
+        patch = OSPatchManagement("OS Config\nweekly patch")
+
+    with Cluster("Detect and respond (observability + incident roots)"):
+        feed = PubSub("CAI feeds\nIAM, org policy,\nfirewall")
+        ops = Monitoring("11 ops alerts")
+        handler = Run("private handler\ndry-run default")
+        daily = Scheduler("secret-age\ndaily check")
+
     # Inheritance is the spine.
     org >> Edge(label="inherits", **INHERIT) >> devtest
     org >> Edge(**INHERIT) >> prod_r
@@ -126,3 +138,17 @@ with Diagram(
     budget >> Edge(**FLOW) >> topic
     tkms >> Edge(label="CMEK", style="dashed") >> bq
     hub >> Edge(label="lz.internal", style="dotted") >> dns
+
+    # Compute baseline: the mirror is the only package path, the image the only VM source.
+    mirror >> Edge(label="apt over ar+https", **FLOW) >> golden
+    golden >> Edge(label="trustedImageProjects", **FLOW) >> mgmt
+    iap >> Edge(label="tcp:22", **FLOW) >> mgmt
+    patch >> Edge(**FLOW) >> mgmt
+
+    # Detect and respond.
+    feed >> Edge(**FLOW) >> bq
+    ops >> Edge(label="alert", **FLOW) >> handler
+    scc >> Edge(label="finding", **FLOW) >> handler
+    handler >> Edge(label="quarantine tag", **DENY) >> mgmt
+    handler >> Edge(label="resize / failover", **FLOW) >> gke
+    daily >> Edge(**FLOW) >> handler

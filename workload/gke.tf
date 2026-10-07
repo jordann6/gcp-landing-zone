@@ -62,6 +62,19 @@ resource "google_container_cluster" "paved_road" {
     channel = "REGULAR"
   }
 
+  # Node and control plane upgrades land on weekend mornings (UTC), not
+  # whenever the release channel ships. GKE requires at least 48 hours of
+  # availability in any 32 days; two 6 hour windows a week clears that. Node
+  # security patches still arrive through auto_upgrade on the pools, inside
+  # this window, which is the managed-image answer to the golden VM image.
+  maintenance_policy {
+    recurring_window {
+      start_time = "2026-01-03T06:00:00Z"
+      end_time   = "2026-01-03T12:00:00Z"
+      recurrence = "FREQ=WEEKLY;BYDAY=SA,SU"
+    }
+  }
+
   networking_mode = "VPC_NATIVE"
   ip_allocation_policy {
     cluster_secondary_range_name  = "pods"
@@ -208,6 +221,58 @@ resource "google_container_node_pool" "default" {
   upgrade_settings {
     max_surge       = 1
     max_unavailable = 0
+  }
+
+  lifecycle {
+    ignore_changes = [node_config[0].kubelet_config, version]
+  }
+}
+
+# Optional one-node Ubuntu pool, for one purpose: proving the GKE half of
+# compute.trustedImageProjects. The default pool boots COS from cos-cloud and
+# gke-node-images; this one boots from ubuntu-os-gke-cloud. If the allowlist in
+# terraform/org_policies.tf misses a GKE image project, the pool's nodes never
+# register, which make test-compute reports. Off by default; the live session
+# turns it on and the workload destroy removes it.
+resource "google_container_node_pool" "ubuntu_probe" {
+  count = var.enable_ubuntu_node_pool ? 1 : 0
+
+  project  = local.project
+  name     = "pool-ubuntu-probe"
+  location = var.zone
+  cluster  = google_container_cluster.paved_road.name
+
+  node_count = 1
+
+  node_config {
+    machine_type      = var.node_machine_type
+    disk_size_gb      = 50
+    disk_type         = "pd-balanced"
+    boot_disk_kms_key = google_kms_crypto_key.workload["gke-disk"].id
+    image_type        = "UBUNTU_CONTAINERD"
+
+    service_account = google_service_account.nodes.email
+    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
+
+    workload_metadata_config {
+      mode = "GKE_METADATA"
+    }
+
+    shielded_instance_config {
+      enable_secure_boot          = true
+      enable_integrity_monitoring = true
+    }
+
+    metadata = {
+      disable-legacy-endpoints = "true"
+    }
+
+    labels = { cost_center = var.cost_center, environment = var.env, purpose = "image-allowlist-probe" }
+  }
+
+  management {
+    auto_repair  = true
+    auto_upgrade = true
   }
 
   lifecycle {

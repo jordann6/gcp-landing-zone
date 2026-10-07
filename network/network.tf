@@ -25,7 +25,7 @@ locals {
   # are absent rather than null when the vend set leaves them out. The
   # defaults put them back as null for the checks below.
   gov = merge(
-    { hub_project_id = null, sandbox_project_id = null },
+    { hub_project_id = null, sandbox_project_id = null, image_project_id = null },
     data.terraform_remote_state.governance.outputs,
   )
 

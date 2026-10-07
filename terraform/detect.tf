@@ -47,8 +47,9 @@ resource "google_scc_notification_config" "active_findings" {
 
   streaming_config {
     # Muted findings are ones a human already judged. Re-notifying on them
-    # trains the reader to ignore the stream.
-    filter = "state = \"ACTIVE\" AND NOT mute = \"MUTED\""
+    # trains the reader to ignore the stream. HIGH and CRITICAL only: the
+    # stream drives email and the incident runbook, so it must be rare.
+    filter = "state = \"ACTIVE\" AND NOT mute = \"MUTED\" AND (severity = \"HIGH\" OR severity = \"CRITICAL\")"
   }
 }
 

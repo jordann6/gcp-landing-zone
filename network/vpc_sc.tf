@@ -30,6 +30,12 @@ locals {
   ) : []
 
   admin_identities = ["serviceAccount:${var.terraform_service_account}"]
+
+  # The incident handler runs outside the perimeter (logging project, next to
+  # the Pub/Sub topics it consumes). Compute, GKE and Cloud Run are not
+  # restricted services, so quarantine and node-pool resize cross freely. Only
+  # sqladmin is restricted, so the Cloud SQL failover needs this one rule.
+  incident_identities = var.enable_incident_access ? ["serviceAccount:sa-incident@${local.gov.logging_project_id}.iam.gserviceaccount.com"] : []
 }
 
 # Every root bills its calls to the seed project (billing_project +
@@ -81,6 +87,31 @@ resource "google_access_context_manager_service_perimeter" "restricted" {
               service_name = operations.value
               method_selectors {
                 method = "*"
+              }
+            }
+          }
+        }
+      }
+
+      dynamic "ingress_policies" {
+        for_each = length(local.incident_identities) > 0 ? [1] : []
+        content {
+          title = "incident-sql-and-secret-age"
+          ingress_from {
+            identities = local.incident_identities
+            sources {
+              access_level = "*"
+            }
+          }
+          ingress_to {
+            resources = ["*"]
+            dynamic "operations" {
+              for_each = ["sqladmin.googleapis.com", "secretmanager.googleapis.com"]
+              content {
+                service_name = operations.value
+                method_selectors {
+                  method = "*"
+                }
               }
             }
           }
@@ -152,6 +183,31 @@ resource "google_access_context_manager_service_perimeter" "restricted" {
               service_name = operations.value
               method_selectors {
                 method = "*"
+              }
+            }
+          }
+        }
+      }
+
+      dynamic "ingress_policies" {
+        for_each = length(local.incident_identities) > 0 ? [1] : []
+        content {
+          title = "incident-sql-and-secret-age"
+          ingress_from {
+            identities = local.incident_identities
+            sources {
+              access_level = "*"
+            }
+          }
+          ingress_to {
+            resources = ["*"]
+            dynamic "operations" {
+              for_each = ["sqladmin.googleapis.com", "secretmanager.googleapis.com"]
+              content {
+                service_name = operations.value
+                method_selectors {
+                  method = "*"
+                }
               }
             }
           }

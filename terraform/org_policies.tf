@@ -62,7 +62,23 @@ locals {
     # Public access prevention on every bucket, not only the ones someone
     # remembered to configure.
     "storage.publicAccessPrevention",
+
+    # OS Config on for every new project, and enable-osconfig cannot be turned
+    # off on a VM. The patch deployment in compute/ depends on the agent
+    # reporting, so this is the control that keeps patching from being opt-out.
+    "compute.requireOsConfig",
   ]
+
+  # Image projects GKE boots nodes from. Without them in the allowlist a node
+  # pool create succeeds and its nodes never boot, which surfaces as a
+  # timed-out pool rather than a policy error.
+  gke_image_projects = [
+    "projects/cos-cloud",
+    "projects/gke-node-images",
+    "projects/ubuntu-os-gke-cloud",
+  ]
+
+  image_project = one(module.image_project[*].project_id)
 }
 
 resource "google_org_policy_policy" "boolean" {
@@ -161,6 +177,57 @@ resource "google_org_policy_policy" "domain_restricted_sharing" {
     rules {
       values {
         allowed_values = ["is:${var.customer_id}"]
+      }
+    }
+  }
+}
+
+# ---- image provenance ----------------------------------------------------------
+
+# Only the landing zone's golden image project, plus the projects GKE boots its
+# nodes from. Every other image, Google's stock Ubuntu and Debian included, is
+# rejected at the API for every project in the org. A hardened image is not a
+# control by itself, since anything else could boot next to it; this
+# constraint is what makes it the only choice.
+#
+# It works on the image's project, not its name or labels, so there is no
+# naming convention to get wrong. The AWS counterpart is Allowed AMIs in the
+# EC2 declarative policy; the Azure one is the approved-image Deny assignment.
+resource "google_org_policy_policy" "trusted_images" {
+  count = var.vend_image_project ? 1 : 0
+
+  name   = "organizations/${var.org_id}/policies/compute.trustedImageProjects"
+  parent = "organizations/${var.org_id}"
+
+  spec {
+    rules {
+      values {
+        allowed_values = concat(["projects/${local.image_project}"], local.gke_image_projects)
+      }
+    }
+  }
+}
+
+# The image project is the one exception. Packer has to boot a stock Ubuntu
+# image to harden it, so an org-wide allowlist that excluded it would deadlock
+# the bake on the policy the bake exists to satisfy. inherit_from_parent = false
+# with an explicit list keeps the exception closed: one extra source project,
+# here and nowhere else.
+resource "google_org_policy_policy" "image_project_bake" {
+  count = var.vend_image_project ? 1 : 0
+
+  name   = "projects/${local.image_project}/policies/compute.trustedImageProjects"
+  parent = "projects/${local.image_project}"
+
+  spec {
+    inherit_from_parent = false
+
+    rules {
+      values {
+        allowed_values = [
+          "projects/${local.image_project}",
+          "projects/${var.bake_source_image_project}",
+        ]
       }
     }
   }

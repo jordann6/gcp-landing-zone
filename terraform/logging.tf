@@ -46,6 +46,20 @@ locals {
   EOT
 }
 
+locals {
+  # VPC flow logs and firewall logs, off by default. They are the volume line
+  # item: flow logs at 0.5 sampling across every subnet. Measure with
+  # scripts/estimate-netlog-cost.sh before flipping enable_network_log_sink.
+  # Only the log bucket sink carries them (no BigQuery copy, no extra sink
+  # writer identity, so the VPC-SC egress rule needs no change).
+  network_filter = <<-EOT
+    logName:"compute.googleapis.com%2Fvpc_flows"
+    OR logName:"compute.googleapis.com%2Ffirewall"
+  EOT
+
+  bucket_filter = var.enable_network_log_sink ? "(${local.audit_filter}) OR (${local.network_filter})" : local.audit_filter
+}
+
 resource "google_logging_organization_sink" "audit" {
   name             = "org-audit-to-bigquery"
   org_id           = var.org_id
@@ -87,7 +101,7 @@ resource "google_logging_organization_sink" "bucket" {
   org_id           = var.org_id
   destination      = "logging.googleapis.com/${google_logging_project_bucket_config.org.id}"
   include_children = true
-  filter           = local.audit_filter
+  filter           = local.bucket_filter
 }
 
 resource "google_project_iam_member" "bucket_sink_writer" {
