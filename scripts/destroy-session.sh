@@ -3,7 +3,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 failed=0
-if [[ $# -eq 0 ]]; then set -- workload network terraform; fi
+if [[ $# -eq 0 ]]; then set -- observability incident compute workload network image terraform; fi
 for root in "$@"; do
   if ! terraform -chdir="$ROOT/$root" init -input=false -backend-config=backend.hcl; then
     failed=1

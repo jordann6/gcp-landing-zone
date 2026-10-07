@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars. Gitignored. seed_project_id,
+# terraform_service_account, and state_bucket come from make wire
+# (lz.auto.tfvars).
+
+# Who runs make test-compute: IAP, OS Login, compute read, patch jobs.
+operators = ["user:you@example.com"]

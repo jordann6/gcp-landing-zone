@@ -99,3 +99,20 @@ variable "enable_probe_vm" {
   default     = true
 }
 
+
+variable "image_family" {
+  description = "Golden image family in the image project (packer/). The probe VM boots from it."
+  type        = string
+  default     = "hardened-ubuntu-2204"
+}
+
+variable "enable_incident_access" {
+  description = <<-EOT
+    Admit the incident handler's service account (sa-incident in the logging
+    project) across the perimeter to Cloud SQL, for the failover runbook. Turn on
+    only after the incident root has created the account: the perimeter rejects
+    an identity that does not exist.
+  EOT
+  type        = bool
+  default     = false
+}

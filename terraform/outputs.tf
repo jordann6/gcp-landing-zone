@@ -88,6 +88,7 @@ output "enforced_constraints" {
   value = concat(
     local.boolean_constraints,
     ["compute.vmExternalIpAccess", "gcp.resourceLocations"],
+    var.vend_image_project ? ["compute.trustedImageProjects"] : [],
     [for c in google_org_policy_custom_constraint.this : c.name],
   )
 }
@@ -100,4 +101,25 @@ output "google_default_constraints" {
 output "findings_topic" {
   description = "Pub/Sub topic receiving Security Command Center findings."
   value       = google_pubsub_topic.findings.id
+}
+
+output "image_project_id" {
+  description = "Golden image project, or null when not vended."
+  value       = local.image_project
+}
+
+output "image_project_number" {
+  description = "Golden image project number, or null."
+  value       = one(module.image_project[*].project_number)
+}
+
+output "asset_history" {
+  description = "Config history: the feed topic and subscription, and the BigQuery dataset the daily export lands in."
+  value = {
+    topic        = google_pubsub_topic.asset_changes.id
+    subscription = google_pubsub_subscription.asset_changes.id
+    dataset      = "${module.logging_project.project_id}.${google_bigquery_dataset.assets.dataset_id}"
+    export_jobs  = { for k, j in google_cloud_scheduler_job.asset_export : k => j.name }
+    feeds        = [for f in google_cloud_asset_organization_feed.changes : f.feed_id]
+  }
 }

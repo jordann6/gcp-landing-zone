@@ -25,6 +25,8 @@ resource "google_pubsub_topic_iam_member" "secret_rotation" {
 
 resource "time_static" "rotation_start" {}
 
+# An empty shell: no version is managed here, so no secret value is ever in
+# state. scripts/set-db-password.sh adds the version.
 resource "google_secret_manager_secret" "db_password" {
   project   = local.project
   secret_id = "app-db-password"
@@ -49,13 +51,30 @@ resource "google_secret_manager_secret" "db_password" {
     name = google_pubsub_topic.secret_rotation.id
   }
 
+  lifecycle {
+    # Secret Manager advances next_rotation_time itself after each rotation
+    # notification, so the value Terraform wrote is stale by design.
+    ignore_changes = [rotation[0].next_rotation_time]
+  }
+
   depends_on = [
     google_kms_crypto_key_iam_member.workload,
     google_pubsub_topic_iam_member.secret_rotation,
   ]
 }
 
-resource "google_secret_manager_secret_version" "db_password" {
-  secret      = google_secret_manager_secret.db_password.id
-  secret_data = random_password.app.result
+# A consumer for the rotation topic so a notification can be read back and
+# proved (scripts/test-secrets.sh). The rotator that mints the new version is
+# the secrets-lifecycle pattern pointed at this subscription.
+resource "google_pubsub_subscription" "secret_rotation" {
+  project = local.project
+  name    = "secret-rotation-sub"
+  topic   = google_pubsub_topic.secret_rotation.id
+
+  message_retention_duration = "86400s"
+  ack_deadline_seconds       = 30
+
+  expiration_policy {
+    ttl = ""
+  }
 }

@@ -247,6 +247,12 @@ variable "enable_scc_notifications" {
   default     = true
 }
 
+variable "enable_network_log_sink" {
+  description = "Also route VPC flow logs and firewall logs to the central log bucket. Off by default: it is the ingestion-cost line item. Run scripts/estimate-netlog-cost.sh first."
+  type        = bool
+  default     = false
+}
+
 variable "alert_email" {
   description = "Email for the org-admin and CIS log-metric alerts, and for essential contacts. Empty skips the channel and the contacts."
   type        = string
@@ -282,3 +288,22 @@ variable "budget_thresholds" {
   default     = [0.5, 0.9, 1.0]
 }
 
+
+# ---- compute baseline ----------------------------------------------------------
+
+variable "vend_image_project" {
+  description = <<-EOT
+    Vend the golden image project (core folder). It holds the hardened image
+    family, the Artifact Registry Ubuntu mirror, and the private bake VPC, and
+    it is what compute.trustedImageProjects admits. Off means no image
+    allowlist is enforced at all, not an allowlist with nothing in it.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "bake_source_image_project" {
+  description = "Public image project Packer hardens from. Admitted only inside the image project."
+  type        = string
+  default     = "ubuntu-os-cloud"
+}

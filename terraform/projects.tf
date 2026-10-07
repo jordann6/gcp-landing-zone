@@ -63,6 +63,10 @@ locals {
     "iam.googleapis.com",
     "logging.googleapis.com",
     "monitoring.googleapis.com",
+    # The management VM is patched by OS Config and reached over IAP + OS Login.
+    "iap.googleapis.com",
+    "oslogin.googleapis.com",
+    "osconfig.googleapis.com",
     "pubsub.googleapis.com",
     "secretmanager.googleapis.com",
     "servicenetworking.googleapis.com",
@@ -85,8 +89,10 @@ module "logging_project" {
 
   apis = [
     "bigquery.googleapis.com",
+    "cloudasset.googleapis.com",
     "cloudkms.googleapis.com",
     "cloudresourcemanager.googleapis.com",
+    "cloudscheduler.googleapis.com",
     "logging.googleapis.com",
     "monitoring.googleapis.com",
     "pubsub.googleapis.com",
@@ -109,6 +115,34 @@ module "hub_project" {
     "cloudresourcemanager.googleapis.com",
     "compute.googleapis.com",
     "dns.googleapis.com",
+    "serviceusage.googleapis.com",
+  ]
+}
+
+# The golden image project. It owns the hardened image family, the Artifact
+# Registry Ubuntu mirror the bake and the patch runs read from, and the private
+# bake VPC. It is the only project trustedImageProjects admits for VMs (see
+# org_policies.tf), and the only one whose own policy still admits the stock
+# Ubuntu image Packer hardens from.
+module "image_project" {
+  source = "./modules/project-factory"
+  count  = var.vend_image_project ? 1 : 0
+
+  name            = "images"
+  name_prefix     = var.name_prefix
+  folder_id       = google_folder.core.name
+  billing_account = var.billing_account
+  environment     = "shared"
+
+  apis = [
+    "artifactregistry.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
+    "compute.googleapis.com",
+    "dns.googleapis.com",
+    "iam.googleapis.com",
+    "iap.googleapis.com",
+    "logging.googleapis.com",
+    "oslogin.googleapis.com",
     "serviceusage.googleapis.com",
   ]
 }

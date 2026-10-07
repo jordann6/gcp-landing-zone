@@ -232,17 +232,16 @@ resource "google_sql_database" "app" {
   name     = "app"
 }
 
-# The password exists in exactly two places: the database, and Secret Manager
-# under CMEK. The app reads it through Workload Identity (workload_identity.tf);
-# no Kubernetes Secret is ever created by hand.
-resource "random_password" "app" {
-  length  = 32
-  special = false
-}
-
+# The password is never in Terraform. This creates the user and nothing else;
+# scripts/set-db-password.sh sets the password in Cloud SQL and adds it to the
+# Secret Manager shell in one step, so the value exists only in those two
+# places, and the app reads it through Workload Identity (workload_identity.tf).
 resource "google_sql_user" "app" {
   project  = local.project
   instance = google_sql_database_instance.primary.name
   name     = "app"
-  password = random_password.app.result
+
+  lifecycle {
+    ignore_changes = [password]
+  }
 }

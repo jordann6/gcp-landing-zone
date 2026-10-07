@@ -9,10 +9,18 @@
 #
 # It is hourly (about $0.01) and hourly-guard flags it, so it is destroyed with
 # the rest of this root.
+#
+# It boots from the golden image family, because compute.trustedImageProjects
+# rejects every stock image outside the image project. So make build-image runs
+# before make deploy-network.
 
 locals {
   probe_vpc = [for k, v in local.vpcs : k if v.restricted && v.env == "prod"]
   probe     = var.enable_probe_vm && length(local.probe_vpc) > 0 ? { probe = local.vpcs[local.probe_vpc[0]] } : {}
+
+  # The governance output is null when the image project is not vended, and
+  # then no allowlist is enforced, so the probe can fall back to stock Debian.
+  probe_image = try(local.gov.image_project_id, null) == null ? "debian-cloud/debian-12" : "projects/${local.gov.image_project_id}/global/images/family/${var.image_family}"
 }
 
 resource "google_service_account" "probe" {
@@ -36,8 +44,8 @@ resource "google_compute_instance" "probe" {
 
   boot_disk {
     initialize_params {
-      image = "debian-cloud/debian-12"
-      size  = 10
+      image = local.probe_image
+      size  = 20
     }
   }
 
@@ -55,6 +63,7 @@ resource "google_compute_instance" "probe" {
 
   metadata = {
     enable-oslogin         = "TRUE"
+    enable-osconfig        = "TRUE"
     block-project-ssh-keys = "TRUE"
   }
 

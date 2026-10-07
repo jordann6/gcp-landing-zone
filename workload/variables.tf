@@ -118,3 +118,9 @@ variable "owner" {
   type        = string
   default     = "jordan"
 }
+
+variable "enable_ubuntu_node_pool" {
+  description = "Add a one-node UBUNTU_CONTAINERD pool that proves ubuntu-os-gke-cloud is in the trusted image allowlist. Hourly; the compute-baseline session turns it on."
+  type        = bool
+  default     = false
+}

@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars. Gitignored. seed_project_id,
+# terraform_service_account, and state_bucket come from make wire
+# (lz.auto.tfvars).
+
+# Who runs make build-image: Packer runs as these credentials.
+operators = ["user:you@example.com"]

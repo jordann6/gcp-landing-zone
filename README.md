@@ -1,16 +1,15 @@
 # GCP Landing Zone
 
-**Compute baseline status:** live bake paused pending an approved private package
-mirror or egress path. Public IPs and hourly NAT are excluded. The planned addition is a golden
-image baked with the shared `cis_baseline` Ansible role, trusted-image policy,
-and one private management VM using IAP and OS Login. Image baking and live guest
-hardening have not yet been proven for this landing zone. Existing live-test
-counts below cover the earlier governance and workload demo. GKE node settings
-will be validated statically during the compute-only session.
-
-The sibling Packer template uses IAP for SSH but a public IP for package egress.
-It cannot be reused unchanged for this private bake. See
-[the private-bake checkpoint](docs/compute-baseline-checkpoint.md).
+**Status (2026-10-06):** every root was deployed live, proven, and destroyed in
+one session. Live results: `make test` 23 passed, 0 failed, 2 skipped; `make
+test-compute` 20/0; `make test-observability` 15/0; `make test-asset-history`
+9/0; `make test-incident` 15/0 dry-run and 24/0 live; `make test-secrets` 30/0;
+`make test-workload` 15/0 with the failover step skipped; and 22 handler unit
+tests. `make destroy` removed all seven roots (380 resources) with every state
+empty. Not proven: Cloud SQL failover through the incident handler, a real
+secret rotation, and deleting a backup vault that holds backups. Details in
+[docs/completion.md](docs/completion.md) and
+[docs/compute-baseline.md](docs/compute-baseline.md).
 
 An organization built as code to Google's security foundations blueprint: five
 governed tiers, org policy and custom constraints at the root, per-environment
@@ -79,7 +78,13 @@ outside it.
 | `bootstrap/` | Seed project, state bucket, `sa-terraform`, GitHub WIF (plan and gated-apply identities). Runs as you, once | Pennies |
 | `terraform/` | Governance: folders, project factory, org policy, custom constraints, workforce federation, PAM, org sinks, CMEK, SCC, budgets, org-admin and CIS alerts | Nearly free |
 | `network/` | Base + restricted Shared VPCs, Cloud NAT, hierarchical + network firewall policy, PSC + private DNS, hub, VPC-SC, probe VM | Hourly |
+| `image/` | Golden image supply: Artifact Registry remote repos over the Ubuntu archive, a bake VPC with no internet route, the bake identity, `compute.imageUser` for consuming projects | Pennies |
 | `workload/` | Paved road in `app-prod`: private GKE, Cloud SQL HA + DR replica, Secret Manager, Artifact Registry, Binary Authorization, backup vault | Hourly |
+| `compute/` | One hardened e2-micro management VM in `app-prod` (golden image, IAP + OS Login, no external IP) and a weekly OS Config patch deployment | Hourly |
+
+`packer/` bakes the image the probe and management VMs boot from, with the
+same pinned `cis_baseline` role (azure-vm-hardening `v2.0.1`) the Azure and AWS
+zones use.
 
 Each root after bootstrap applies as `sa-terraform` through impersonation and
 reads the root beneath it from remote state.
@@ -161,23 +166,35 @@ else to `sa-terraform`.
 cp bootstrap/terraform.tfvars.example bootstrap/terraform.tfvars   # org, billing, operators
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars   # vend set, alert email
 cp network/terraform.tfvars.example network/terraform.tfvars       # operators
+cp image/terraform.tfvars.example image/terraform.tfvars           # operators (Packer runs as you)
+cp compute/terraform.tfvars.example compute/terraform.tfvars       # operators
 
 make bootstrap        # seed, state, sa-terraform, WIF; writes backend.hcl + lz.auto.tfvars
 make deploy           # governance (nearly free)
+make deploy-image     # mirror + bake network (pennies)
+make build-image      # Packer bake, about 15 minutes; the probe VM needs the image
 make deploy-network   # hourly
 make deploy-workload  # hourly
+make deploy-compute   # hourly
 ```
 
 **Project cap.** A self-serve billing account caps linked projects, and deleted
-projects count for 30 days. The full design vends 10 plus the seed. The `vend`
-flags in `terraform.tfvars` pick a reduced set (seed, logging, net-prod-r,
-app-prod) that still exercises the workload root; the example file shows both.
+projects count for 30 days. The full design vends 11 plus the seed. The `vend`
+flags in `terraform.tfvars` pick a reduced set (seed, logging, images,
+net-prod-r, app-prod) that still exercises the workload and compute roots; the
+example file shows both.
 
 ## Test
 
 ```bash
 make test            # governance + network
 make test-workload   # paved road (includes a Cloud SQL failover; SKIP_FAILOVER=1 to skip)
+make test-compute    # compute baseline
+make test-observability   # forced ops alert, end to end
+make test-asset-history   # IAM change in the CAI feed and BigQuery export
+make test-incident        # handler decision (dry-run) and quarantine (live)
+make test-secrets         # no secret in state, rotation notification, stale-secret alert
+make test-handler         # handler unit tests, no credentials
 ```
 
 Every check prints PASS, FAIL, or SKIP, and a denial passes only if the error
@@ -201,6 +218,16 @@ pass.
 | Unlabelled pod and the probe VM cannot reach 5432 | NetworkPolicy and firewall-policy segmentation |
 | Private IP only, CMEK, HA, PITR, replica running | Data tier |
 | Failover changes zone, keeps the IP | HA, with the time printed as measured RTO |
+| Stock Debian VM rejected; golden project and GKE image projects trusted | `compute.trustedImageProjects` |
+| Management VM boots the golden family, no external IP, shielded, OS Login + OS Config | Compute baseline shape |
+| Pinned `check-hardening.sh` passes on the live VM over IAP | The role's hardening survives image and boot |
+| apt reads the mirror; `archive.ubuntu.com` unreachable | The mirror is the only package path |
+| OS Config patch job SUCCEEDED | Patching works through the restricted PSC path |
+| COS and Ubuntu GKE node pools RUNNING | The allowlist does not strand GKE |
+| IAM grant found in the Asset Inventory feed and BigQuery export, then reverted | Config history |
+| Forced egress denials open an ops alert in about 3 minutes | Observability |
+| Sample SCC finding quarantines the management VM, then it is restored; GKE pool resized 2 to 3 and back | Incident handler (live mode) |
+| No secret value in any of 7 state objects; `SECRET_ROTATE` published; stale-secret alert opens | Secrets lifecycle |
 
 ## Cost
 
@@ -209,19 +236,21 @@ pass.
 | Governance, standing | KMS key versions, a small BigQuery dataset: pennies |
 | Network, while up | PSC endpoints, NAT (billed per VM using it), NGFW per GB, probe e2-micro: about $0.10 to $0.15/hr |
 | Workload, while up | Cloud SQL HA on 1 vCPU (about $0.13/hr), DR replica (about $0.07/hr), two e2-standard-2 nodes (about $0.20/hr). The zonal GKE management fee is covered by the free tier: about $0.40 to $0.50/hr |
+| Image, while up | Remote repo cache storage and a few image GB: pennies. The bake VM (e2-small) exists for about 15 minutes |
+| Compute, while up | e2-micro management VM: about $0.01/hr |
 | Full session (about 3.5 hours) | About $2 to $5 |
 | After destroy | Under $0.50/mo (key rings cannot be deleted; empty ones are free) |
 
 ## Destroy
 
 ```bash
-make destroy   # workload, then network, then governance, then verify-teardown.sh
+make destroy   # compute, workload, network, image, governance, then verify-teardown.sh
 terraform -chdir=bootstrap destroy   # last, with force_destroy_state = true
 ```
 
 `scripts/verify-teardown.sh` checks both Terraform state and the live org: no
-VMs, routers, forwarding rules, VPN tunnels, disks, clusters, or SQL instances in
-any landing zone project, and Google's default constraints still present. A
+VMs, routers, forwarding rules, VPN tunnels, disks, images, snapshots, clusters,
+SQL instances, or Artifact Registry repositories in any landing zone project, and Google's default constraints still present. A
 LoadBalancer Service's forwarding rule or a PVC's disk is never in Terraform
 state, and this is what catches it.
 

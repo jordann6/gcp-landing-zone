@@ -25,6 +25,7 @@ locals {
   terraform_org_roles = [
     "roles/accesscontextmanager.policyAdmin",
     "roles/billing.projectManager",
+    "roles/cloudasset.owner",
     "roles/compute.orgFirewallPolicyAdmin",
     "roles/compute.orgSecurityResourceAdmin",
     "roles/compute.xpnAdmin",
@@ -37,6 +38,8 @@ locals {
     "roles/resourcemanager.organizationAdmin",
     "roles/resourcemanager.projectCreator",
     "roles/resourcemanager.projectDeleter",
+    # Secure tags: the quarantine tag (network/) and its tagUser grant (incident/).
+    "roles/resourcemanager.tagAdmin",
     "roles/securitycenter.admin",
   ]
 }

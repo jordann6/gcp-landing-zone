@@ -1,0 +1,3 @@
+# seed_project_id, terraform_service_account and state_bucket come from make wire
+# (lz.auto.tfvars). image comes from scripts/build-incident.sh (image.auto.tfvars).
+# Nothing to set by hand.

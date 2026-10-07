@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars. Gitignored. seed_project_id,
+# terraform_service_account, and state_bucket come from make wire
+# (lz.auto.tfvars).
+
+# Ops alert recipient. Separate from the security alert email in terraform/.
+ops_alert_email = "ops@example.com"

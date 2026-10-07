@@ -15,7 +15,7 @@
 source "$(dirname "$0")/lib.sh"
 
 section "Terraform state"
-for root in workload network terraform; do
+for root in observability incident compute workload network image terraform; do
 	if state="$(terraform -chdir="$ROOT/$root" state list 2>&1)"; then
 		N="$(printf '%s\n' "$state" | sed '/^$/d' | wc -l | tr -d ' ')"
 		[ "$N" = "0" ] && ok "$root/ state is empty" || bad "$root/ still tracks $N resources" "$state"
@@ -57,7 +57,25 @@ for p in $PROJECTS; do
 	check snapshots gcloud compute snapshots list
 	check addresses gcloud compute addresses list --filter='addressType=EXTERNAL'
 	check clusters gcloud container clusters list
+	# Not every project enables Artifact Registry, and listing against a
+	# disabled API errors rather than returning nothing.
+	if gcloud services list --enabled --project="$p" --filter='config.name=artifactregistry.googleapis.com' \
+		--format='value(config.name)' 2>/dev/null | grep -q .; then
+		check repositories gcloud artifacts repositories list
+	fi
 	check sql gcloud sql instances list
+	# Backup and DR vaults enforce retention, so one holding backups survives a
+	# destroy until they age out, and still bills. Listed as sa-terraform because
+	# the operator has no backupdr permissions.
+	if gcloud services list --enabled --project="$p" --filter='config.name=backupdr.googleapis.com' \
+		--format='value(config.name)' 2>/dev/null | grep -q .; then
+		# The seed project is bootstrap's, outside sa-terraform's grants, so it is
+		# listed as the operator.
+		vault_imp="$IMP"
+		[ "$(gcloud projects describe "$p" --format='value(labels.layer)' 2>/dev/null)" = "seed" ] && vault_imp=""
+		# shellcheck disable=SC2086
+		check backup-vaults gcloud backup-dr backup-vaults list --location=- $vault_imp
+	fi
 	[ -z "$found" ] && ok "$p clean" || bad "$p still has:$found"
 done
 
