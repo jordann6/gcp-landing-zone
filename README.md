@@ -1,23 +1,19 @@
 # GCP Landing Zone
 
-**Status (2026-10-06):** every root was deployed live, proven, and destroyed in
-one session. Live results: `make test` 23 passed, 0 failed, 2 skipped; `make
-test-compute` 20/0; `make test-observability` 15/0; `make test-asset-history`
-9/0; `make test-incident` 15/0 dry-run and 24/0 live; `make test-secrets` 30/0;
-`make test-workload` 15/0 with the failover step skipped; and 22 handler unit
-tests. `make destroy` removed all seven roots (380 resources) with every state
-empty. Not proven: Cloud SQL failover through the incident handler, a real
-secret rotation, and deleting a backup vault that holds backups. Details in
-[docs/completion.md](docs/completion.md) and
-[docs/compute-baseline.md](docs/compute-baseline.md).
-
 An organization built as code to Google's security foundations blueprint: five
 governed tiers, org policy and custom constraints at the root, per-environment
 base and restricted Shared VPCs behind a VPC Service Controls perimeter,
 workforce-federated personas with just-in-time prod access, and a private GKE
 plus Cloud SQL paved road that proves the controls hold for a real workload.
 
-![Architecture](docs/architecture.png)
+![GCP landing zone overview](docs/overview.png)
+
+Policy lives at the organization root, and every project inherits it from the
+moment it is created. The workload sits on a restricted Shared VPC inside a VPC
+Service Controls perimeter: Google APIs resolve to a private PSC endpoint, and
+the only path to the internet is Cloud NGFW's default-deny egress policy with
+an FQDN allowlist, then Cloud NAT. The [full diagram](#full-diagram) shows every
+folder, project and control.
 
 It is one of three standalone landing zones (AWS, Azure, GCP) built to the same
 design: the same tiers, the same `10.x` address plan, the same pipeline, and no
@@ -70,6 +66,50 @@ hybrid attachment point.
 whether a call may cross a boundary, independent of whether the caller has the
 permission. A stolen credential still cannot read a bucket in the perimeter from
 outside it.
+
+## What the live v1 deploy taught (2026-08-10)
+
+**A new GCP organization is not greenfield.** Google pre-applies a
+secure-by-default policy set. Declaring those constraints fails with `409
+POLICY_ALREADY_EXISTS`.
+
+**Billing accounts cap linked projects,** and `DELETE_REQUESTED` projects count.
+
+**A resource count must be knowable at plan time.** Hence explicit `vend` and
+`attach_shared_vpc` flags instead of counts derived from generated IDs.
+
+**`organizationAdmin` grants almost none of the operational org roles.**
+folderAdmin, policyAdmin, xpnAdmin, and logging.configWriter each had to be
+added after an apply failed on exactly one resource. `sa-terraform` now carries
+the full list, and `securitycenter.admin` replaces the notification role that
+proved insufficient.
+
+**`skipDefaultNetworkCreation` governs a project's starting state, not the name
+`default`.** Creating a network called `default` later succeeds. Verify the
+control by listing a freshly vended project's networks.
+
+v1 deployed 52 resources, proved inheritance, the org sink, and two policy
+denials, and was destroyed for under $0.20.
+
+## Status
+
+every root was deployed live, proven, and destroyed in
+one session. Live results: `make test` 23 passed, 0 failed, 2 skipped; `make
+test-compute` 20/0; `make test-observability` 15/0; `make test-asset-history`
+9/0; `make test-incident` 15/0 dry-run and 24/0 live; `make test-secrets` 30/0;
+`make test-workload` 15/0 with the failover step skipped; and 22 handler unit
+tests. `make destroy` removed all seven roots (380 resources) with every state
+empty. Not proven: Cloud SQL failover through the incident handler, a real
+secret rotation, and deleting a backup vault that holds backups. Details in
+[docs/completion.md](docs/completion.md) and
+[docs/compute-baseline.md](docs/compute-baseline.md).
+
+## Full diagram
+
+![GCP landing zone full architecture](docs/architecture.png)
+
+Inheritance first, then the network, then the paved road, detection and compute
+baseline. Read it top to bottom.
 
 ## Layout
 
@@ -291,30 +331,6 @@ GCP teardown traps, all hit for real in v1 or designed around here:
   (`associate_sql_with_vault`).
 - **The PSA peering outlives Cloud SQL by a few minutes.** `deletion_policy =
   ABANDON` lets the network root finish.
-
-## What the live v1 deploy taught (2026-08-10)
-
-**A new GCP organization is not greenfield.** Google pre-applies a
-secure-by-default policy set. Declaring those constraints fails with `409
-POLICY_ALREADY_EXISTS`.
-
-**Billing accounts cap linked projects,** and `DELETE_REQUESTED` projects count.
-
-**A resource count must be knowable at plan time.** Hence explicit `vend` and
-`attach_shared_vpc` flags instead of counts derived from generated IDs.
-
-**`organizationAdmin` grants almost none of the operational org roles.**
-folderAdmin, policyAdmin, xpnAdmin, and logging.configWriter each had to be
-added after an apply failed on exactly one resource. `sa-terraform` now carries
-the full list, and `securitycenter.admin` replaces the notification role that
-proved insufficient.
-
-**`skipDefaultNetworkCreation` governs a project's starting state, not the name
-`default`.** Creating a network called `default` later succeeds. Verify the
-control by listing a freshly vended project's networks.
-
-v1 deployed 52 resources, proved inheritance, the org sink, and two policy
-denials, and was destroyed for under $0.20.
 
 ## Pipeline
 
