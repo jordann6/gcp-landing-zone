@@ -8,6 +8,10 @@ name: Landing zone cost gate
 # baseline instead of a failed estimate. Hosted Infracost policies are switched
 # off so they cannot define this repo's label rules. Infracost parses HCL, so
 # this job needs no cloud credentials and no plan.
+#
+# Off unless the repository variable FINOPS_GATE_ENABLED is "true", so the
+# gate needs an Infracost API key only when someone opts in:
+#   gh variable set FINOPS_GATE_ENABLED -R jordann6/gcp-landing-zone --body true
 on:
   workflow_call:
     inputs:
@@ -19,7 +23,7 @@ on:
         default: "50"
     secrets:
       INFRACOST_API_KEY:
-        required: true
+        required: false
 
 permissions:
   contents: read
@@ -29,7 +33,7 @@ jobs:
   cost:
     name: Cost threshold (Infracost)
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && vars.FINOPS_GATE_ENABLED == 'true'
     defaults:
       run:
         shell: bash
