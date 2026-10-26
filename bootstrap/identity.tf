@@ -13,7 +13,7 @@ resource "google_service_account" "terraform" {
   project      = google_project.seed.project_id
   account_id   = "sa-terraform"
   display_name = "Landing zone Terraform"
-  description  = "Applies the landing zone roots. Impersonated by operators and by the gated CI apply; never has a key."
+  description  = "Applies the landing zone roots. Impersonated by operators only; never has a key."
 }
 
 locals {
