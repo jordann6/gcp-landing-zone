@@ -6,11 +6,19 @@
 #
 #   sa-gha-plan   read-only at the org, plus state-bucket write for the lock.
 #                 Reachable from any workflow run in this repository.
-#   sa-terraform  the apply identity. Reachable only from a job bound to the
+#   sa-gha-plan   read-only at the org. State reads everywhere, state writes
+#                 only for the .tflock objects a plan takes and releases.
+#                 Reachable from any workflow run in this repository.
+#   sa-gha-apply  the CI apply identity. Reachable only from a job bound to the
 #                 prod-apply or destroy GitHub environment, both of which carry a
 #                 required reviewer. A PR that edits a workflow to skip the
 #                 environment gets a token without the environment claim and
-#                 cannot impersonate it.
+#                 cannot impersonate it. It can change one thing: the ci-proof
+#                 root (networking in the seed project, and that root's state).
+#
+# sa-terraform is not reachable from CI at all. It holds organizationAdmin and
+# can rewrite this file's trust, so the roots that need it (governance, network,
+# workload, compute) stay operator-applied through impersonation.
 
 resource "google_iam_workload_identity_pool" "github" {
   project                   = google_project.seed.project_id
@@ -41,8 +49,14 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   }
 
   # Without a condition, any GitHub repository in the world could present a
-  # token to this provider. The condition pins the pool to one repository.
-  attribute_condition = "assertion.repository == \"${var.github_repository}\""
+  # token to this provider. The condition pins the pool to one repository by its
+  # numeric IDs as well as its name: a name can be freed by a rename or a
+  # deleted account and claimed by someone else, the IDs cannot.
+  attribute_condition = join(" && ", [
+    "assertion.repository == \"${var.github_repository}\"",
+    "assertion.repository_id == \"${var.github_repository_id}\"",
+    "assertion.repository_owner_id == \"${var.github_repository_owner_id}\"",
+  ])
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
@@ -100,12 +114,25 @@ resource "google_project_iam_member" "gha_plan_seed" {
   member  = google_service_account.gha_plan.member
 }
 
-# objectAdmin rather than objectViewer: the GCS backend takes its lock by
-# writing a .tflock object, so a read-only plan still needs write on the bucket.
 resource "google_storage_bucket_iam_member" "gha_plan_state" {
+  bucket = google_storage_bucket.state.name
+  role   = "roles/storage.objectViewer"
+  member = google_service_account.gha_plan.member
+}
+
+# The GCS backend takes its lock by writing a .tflock object, so a plan needs
+# write on the bucket. The condition limits that write to lock objects: a plan
+# identity that could overwrite state could apply by editing it.
+resource "google_storage_bucket_iam_member" "gha_plan_lock" {
   bucket = google_storage_bucket.state.name
   role   = "roles/storage.objectAdmin"
   member = google_service_account.gha_plan.member
+
+  condition {
+    title       = "tflock-only"
+    description = "Create and delete Terraform lock objects, nothing else."
+    expression  = "resource.name.endsWith(\".tflock\")"
+  }
 }
 
 resource "google_service_account_iam_member" "gha_plan" {
@@ -114,10 +141,46 @@ resource "google_service_account_iam_member" "gha_plan" {
   member             = "${local.pool_principal_prefix}/attribute.repository/${var.github_repository}"
 }
 
+resource "google_service_account" "gha_apply" {
+  project      = google_project.seed.project_id
+  account_id   = "sa-gha-apply"
+  display_name = "GitHub Actions apply (ci-proof only)"
+  description  = "Gated CI apply and destroy of the ci-proof root. Reachable only from reviewer-gated GitHub environments."
+}
+
+# Networking in the seed project, which holds no network of its own: enough to
+# create and delete the ci-proof VPC, subnet, and firewall rule. securityAdmin
+# is the firewall half; networkAdmin excludes firewall rules.
+resource "google_project_iam_member" "gha_apply_seed" {
+  for_each = toset(["roles/compute.networkAdmin", "roles/compute.securityAdmin"])
+
+  project = google_project.seed.project_id
+  role    = each.value
+  member  = google_service_account.gha_apply.member
+}
+
+# State write for the ci-proof prefix only. objects.list is authorized against
+# the bucket itself, so the bucket name is the second clause; every object
+# read, write, and delete outside the prefix is denied.
+resource "google_storage_bucket_iam_member" "gha_apply_state" {
+  bucket = google_storage_bucket.state.name
+  role   = "roles/storage.objectAdmin"
+  member = google_service_account.gha_apply.member
+
+  condition {
+    title       = "ci-proof-state-only"
+    description = "Read and write the ci-proof root's state and lock, nothing else."
+    expression = join(" || ", [
+      "resource.name == \"projects/_/buckets/${google_storage_bucket.state.name}\"",
+      "resource.name.startsWith(\"projects/_/buckets/${google_storage_bucket.state.name}/objects/${var.ci_state_prefix}/\")",
+    ])
+  }
+}
+
 resource "google_service_account_iam_member" "gha_apply" {
   for_each = toset(var.github_apply_environments)
 
-  service_account_id = google_service_account.terraform.name
+  service_account_id = google_service_account.gha_apply.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "${local.pool_principal_prefix}/attribute.environment/${each.value}"
 }

@@ -1,33 +1,23 @@
 name: Apply (gated)
 
-# Reviewer-gated apply: the just-in-time-to-prod control expressed in CI. The
-# plan job impersonates sa-gha-plan (read-only); the apply job is bound to the
-# prod-apply environment, pauses for a required reviewer, and only then can
-# impersonate sa-terraform, because the bootstrap WIF binding for sa-terraform
-# matches on the token's environment claim. A workflow edited to skip the
-# environment gets a token without that claim and cannot reach the apply
-# identity. See bootstrap/wif.tf and tf-apply.yml in platform-guardrails.
+# Reviewer-gated apply: the just-in-time-to-prod control in CI. The plan job
+# federates through the WIF provider as the read-only sa-gha-plan, plans, and
+# runs the destroy guard. The apply job is bound to the `prod-apply`
+# environment, pauses for a required reviewer, then federates as sa-gha-apply
+# and applies the exact saved plan. sa-gha-apply's WIF binding matches on the
+# token's environment claim, so a workflow edited to skip the environment gets
+# a token that cannot reach it. See bootstrap/wif.tf and tf-apply.yml in
+# platform-guardrails.
 #
-# INACTIVE. Two things are needed first:
-#   1. platform-guardrails#2 merged and tagged v1.4.0 (it adds the GCP auth
-#      inputs used below)
-#   2. a CI backend config: backend.hcl is gitignored and carries
-#      impersonate_service_account, which CI must not use (CI already IS the
-#      service account). Commit a ci.backend.hcl with only `bucket = ...` and
-#      pass it to init, or give the shared workflow a backend_config input.
-# Then: make bootstrap, set repo variables GCP_WIF_PROVIDER, GCP_PLAN_SA,
-# GCP_APPLY_SA from its outputs, create the prod-apply environment with a
-# required reviewer, and add a push trigger.
+# Only ci-proof/ is applied here. sa-gha-apply holds networking roles in the
+# seed project and write on the ci-proof state prefix, nothing else. The other
+# roots stay operator-applied as sa-terraform, which CI cannot reach, and
+# bootstrap/ owns every identity, so CI can never rewrite its own trust.
 #
-# Until then applies run locally through make, as sa-terraform by impersonation.
+# Pinned to one platform-guardrails SHA with the tag in a comment, and the same
+# SHA is passed as guardrails_ref so the scripts match the reviewed workflow.
 on:
   workflow_dispatch:
-    inputs:
-      root:
-        description: Terraform root to apply
-        type: choice
-        options: [terraform, network, workload]
-        default: terraform
 
 permissions:
   contents: read
@@ -37,9 +27,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: jordann6/platform-guardrails/.github/workflows/tf-apply.yml@v1.4.0
+    uses: jordann6/platform-guardrails/.github/workflows/tf-apply.yml@c13311e2cc20b48af292d067e0b936f43116e257 # v1.8.1
     with:
-      terraform_dir: ${{ inputs.root }}
+      guardrails_ref: c13311e2cc20b48af292d067e0b936f43116e257
+      terraform_dir: ci-proof
       environment: prod-apply
       gcp_workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
       gcp_plan_service_account: ${{ vars.GCP_PLAN_SA }}

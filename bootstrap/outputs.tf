@@ -38,3 +38,8 @@ output "github_plan_service_account" {
   description = "Read-only CI identity (gcp_service_account / gcp_plan_service_account)."
   value       = google_service_account.gha_plan.email
 }
+
+output "github_apply_service_account" {
+  description = "Gated CI apply identity for the ci-proof root (gcp_apply_service_account)."
+  value       = google_service_account.gha_apply.email
+}

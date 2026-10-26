@@ -1,4 +1,5 @@
 TF_BOOT ?= bootstrap
+TF_CI   ?= ci-proof
 TF_GOV  ?= terraform
 TF_NET  ?= network
 TF_WORK ?= workload
@@ -25,7 +26,7 @@ fmt: ## Terraform format check, all roots
 
 .PHONY: validate
 validate: ## Terraform init (no backend) + validate, every root
-	@for d in $(TF_BOOT) $(ROOTS); do \
+	@for d in $(TF_BOOT) $(ROOTS) $(TF_CI); do \
 		echo "==> $$d"; \
 		terraform -chdir=$$d init -backend=false -input=false >/dev/null && terraform -chdir=$$d validate || exit 1; \
 	done
@@ -33,7 +34,7 @@ validate: ## Terraform init (no backend) + validate, every root
 .PHONY: policy
 policy: ## conftest: shared platform-guardrails policy + this repo's policy/, every root
 	@test -d .guardrails-src || git clone -q --depth 1 https://github.com/jordann6/platform-guardrails .guardrails-src
-	@for d in $(TF_BOOT) $(ROOTS); do \
+	@for d in $(TF_BOOT) $(ROOTS) $(TF_CI); do \
 		echo "==> $$d"; \
 		conftest test --parser hcl2 --combine --policy .guardrails-src/policy --policy policy \
 			$$(find $$d -name '*.tf' -not -path '*/.terraform/*') || exit 1; \

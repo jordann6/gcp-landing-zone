@@ -115,19 +115,21 @@ baseline. Read it top to bottom.
 
 | Root | What | Cost posture |
 |---|---|---|
-| `bootstrap/` | Seed project, state bucket, `sa-terraform`, GitHub WIF (plan and gated-apply identities). Runs as you, once | Pennies |
+| `bootstrap/` | Seed project, state bucket, `sa-terraform`, GitHub WIF (`sa-gha-plan` and the gated `sa-gha-apply`). Runs as you, once | Pennies |
 | `terraform/` | Governance: folders, project factory, org policy, custom constraints, workforce federation, PAM, org sinks, CMEK, SCC, budgets, org-admin and CIS alerts | Nearly free |
 | `network/` | Base + restricted Shared VPCs, Cloud NAT, hierarchical + network firewall policy, PSC + private DNS, hub, VPC-SC, probe VM | Hourly |
 | `image/` | Golden image supply: Artifact Registry remote repos over the Ubuntu archive, a bake VPC with no internet route, the bake identity, `compute.imageUser` for consuming projects | Pennies |
 | `workload/` | Paved road in `app-prod`: private GKE, Cloud SQL HA + DR replica, Secret Manager, Artifact Registry, Binary Authorization, backup vault | Hourly |
 | `compute/` | One hardened e2-micro management VM in `app-prod` (golden image, IAP + OS Login, no external IP) and a weekly OS Config patch deployment | Hourly |
+| `ci-proof/` | The root CI applies: a custom-mode VPC, one subnet, a deny-all ingress rule in the seed project. Proves the gated WIF path end to end | Free |
 
 `packer/` bakes the image the probe and management VMs boot from, with the
 same pinned `cis_baseline` role (azure-vm-hardening `v2.0.1`) the Azure and AWS
 zones use.
 
-Each root after bootstrap applies as `sa-terraform` through impersonation and
-reads the root beneath it from remote state.
+Each root after bootstrap except `ci-proof/` applies as `sa-terraform` through
+impersonation and reads the root beneath it from remote state. `ci-proof/`
+applies only from CI, as `sa-gha-apply`.
 
 ## What gets built
 
@@ -209,7 +211,7 @@ bucket.
 | Destruction protection | `force_destroy = var.force_destroy_state`, default `false`, so a destroy fails while state objects exist. `prevent_destroy` is deliberately absent: bootstrap is torn down at the end of every session, and `prevent_destroy` would block that. Final teardown sets `force_destroy_state = true` explicitly. |
 | Versioning and recovery | Object versioning on, with a lifecycle rule that keeps the 20 newest noncurrent versions. GCS's default 7-day soft delete also applies, because the bucket does not override it. |
 | Encryption | Google-managed keys. A CMEK on the state bucket is an option, but the key ring would outlive every session (key rings cannot be deleted), so it is documented, not built. |
-| Access and transport | Uniform bucket-level access and enforced public access prevention. GCS only serves TLS, so there is no plaintext path to block. Every root reaches the bucket by impersonating `sa-terraform`, not with user credentials. Access logs land in a separate `-tfstate-logs` bucket with 90-day retention. |
+| Access and transport | Uniform bucket-level access and enforced public access prevention. GCS only serves TLS, so there is no plaintext path to block. Operator-applied roots reach the bucket by impersonating `sa-terraform`, not with user credentials. The CI identities hold IAM conditions: `sa-gha-plan` reads every state but writes only `.tflock` objects, and `sa-gha-apply` reads and writes only the `landing-zone/ci-proof/` prefix. Access logs land in a separate `-tfstate-logs` bucket with 90-day retention. |
 | State locking | Native GCS locking in the `gcs` backend. No separate lock table. |
 
 ## Deploy
@@ -338,10 +340,36 @@ GCP teardown traps, all hit for real in v1 or designed around here:
 [platform-guardrails](https://github.com/jordann6/platform-guardrails) static
 gates on every root (gitleaks over full history, fmt, validate, lock files,
 tflint, Checkov, Trivy), this repo's own conftest rules with a fixture that must
-fail, and shellcheck. The gated apply, destroy, and hourly TTL guard use WIF
-through the bootstrap identities; they are wired and inactive until the shared
-workflows' GCP auth path is tagged. See the header of each workflow for the
-activation steps.
+fail, and shellcheck.
+
+Credentialed CI runs on Workload Identity Federation, with no service account
+key anywhere:
+
+- **Pool pinned by immutable IDs.** The provider's attribute condition checks
+  the repository name and its numeric `repository_id` and
+  `repository_owner_id`. A name can be freed by a rename and claimed by someone
+  else; the IDs cannot. The AWS and Azure zones each failed a first run on a
+  name-based OIDC subject, so this one pins IDs from the start.
+- **Two CI identities.** `sa-gha-plan` is read-only at the org and reachable
+  from any run in this repo. `sa-gha-apply` is reachable only from a job bound
+  to the `prod-apply` or `destroy` GitHub environment (required reviewer,
+  main-only), because its binding matches the token's environment claim. It
+  holds networking roles in the seed project and the `ci-proof` state prefix,
+  nothing else.
+- **`sa-terraform` is out of CI's reach.** It holds `organizationAdmin` and
+  could rewrite the trust above, so governance, network, workload, and compute
+  stay operator-applied through impersonation. CI applies `ci-proof/` only.
+- **Workflows.** `apply.yml` (plan as `sa-gha-plan`, reviewer gate, apply the
+  saved plan as `sa-gha-apply`), `destroy.yml` (gated destroy plus a check that
+  nothing hourly survived), and `ttl-guard.yml` (hourly at :37, read-only, over
+  network, workload, compute, and ci-proof). All three pin platform-guardrails
+  by SHA (`v1.8.1`) and pass the same SHA as `guardrails_ref`.
+
+Repo variables `GCP_WIF_PROVIDER`, `GCP_PLAN_SA`, and `GCP_APPLY_SA` come from
+the bootstrap outputs. The roots the TTL guard reads name the state bucket in
+their backend block, so a fresh `make bootstrap` (new seed suffix) means
+updating that bucket name in `ci-proof/`, `network/`, `workload/`, and
+`compute/`.
 
 ## What changes at production scale
 

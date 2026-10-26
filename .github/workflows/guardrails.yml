@@ -13,7 +13,8 @@ on:
 # conftest.
 #
 # One static job per Terraform root, as in the AWS repo (governance, image,
-# network, workload, compute, observability, incident), plus bootstrap.
+# network, workload, compute, observability, incident), plus bootstrap and
+# ci-proof.
 #
 # Policy: the shared conftest suite carries GCP rules as of v1.4.0
 # (platform-guardrails#2), so each root's shared job runs them alongside this
@@ -69,6 +70,12 @@ jobs:
     uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.4.0
     with:
       terraform_dir: incident
+      skip_policy: false
+
+  static_ci_proof:
+    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.4.0
+    with:
+      terraform_dir: ci-proof
       skip_policy: false
 
   # The local cost workflow fails closed and keeps hosted example policies out
@@ -169,7 +176,7 @@ jobs:
 
       - name: Roots pass the repo rules
         run: |
-          for d in bootstrap terraform image network workload compute observability incident; do
+          for d in bootstrap terraform image network workload compute observability incident ci-proof; do
             echo "==> $d"
             conftest test --parser hcl2 --combine --policy policy \
               $(find "$d" -name '*.tf' -not -path '*/.terraform/*')

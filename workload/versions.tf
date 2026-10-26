@@ -4,6 +4,9 @@ terraform {
   # Its own state. This is the paved-road prod workload (data tier + GKE): the
   # hourly-billed layer, deployed for a demo and destroyed on its own, first.
   backend "gcs" {
+    # Written out so the TTL guard can init this root in CI with no backend
+    # config. Locally, backend.hcl from make wire adds the impersonation.
+    bucket = "jn-lz-seed-8890bf-tfstate"
     prefix = "landing-zone/workload"
   }
 

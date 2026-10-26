@@ -4,6 +4,9 @@ terraform {
   # Its own state: the management VM is hourly, so it deploys and destroys on
   # its own, first in the teardown order.
   backend "gcs" {
+    # Written out so the TTL guard can init this root in CI with no backend
+    # config. Locally, backend.hcl from make wire adds the impersonation.
+    bucket = "jn-lz-seed-8890bf-tfstate"
     prefix = "landing-zone/compute"
   }
 

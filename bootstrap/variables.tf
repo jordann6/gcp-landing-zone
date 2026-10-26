@@ -64,8 +64,26 @@ variable "github_repository" {
   default     = "jordann6/gcp-landing-zone"
 }
 
+variable "github_repository_id" {
+  description = "Numeric ID of github_repository (gh api repos/OWNER/REPO --jq .id). Pins federation to the repository, not a reusable name."
+  type        = string
+  default     = "1407358320"
+}
+
+variable "github_repository_owner_id" {
+  description = "Numeric ID of the repository owner (gh api users/OWNER --jq .id)."
+  type        = string
+  default     = "196278615"
+}
+
+variable "ci_state_prefix" {
+  description = "State prefix of the root CI may apply. Must match the backend prefix in ci-proof/versions.tf."
+  type        = string
+  default     = "landing-zone/ci-proof"
+}
+
 variable "github_apply_environments" {
-  description = "GitHub environments whose jobs may impersonate sa-terraform. Each must carry a required reviewer."
+  description = "GitHub environments whose jobs may impersonate sa-gha-apply. Each must carry a required reviewer."
   type        = list(string)
   default     = ["prod-apply", "destroy"]
 }
