@@ -365,6 +365,27 @@ key anywhere:
   network, workload, compute, and ci-proof). All three pin platform-guardrails
   by SHA (`v1.8.1`) and pass the same SHA as `guardrails_ref`.
 
+Proven live 2026-10-26, all on federated identities with no key:
+
+| Run | What it showed |
+|---|---|
+| [40352702747](https://github.com/jordann6/gcp-landing-zone/actions/runs/40352702747) | Gated apply: plan as `sa-gha-plan` (3 to add), paused for the reviewer, applied the saved plan as `sa-gha-apply` |
+| [40353260826](https://github.com/jordann6/gcp-landing-zone/actions/runs/40353260826) | Gated destroy: 3 destroyed, post-destroy check found nothing hourly in state |
+| [40355355475](https://github.com/jordann6/gcp-landing-zone/actions/runs/40355355475) | TTL guard: network, workload, compute, ci-proof read as `sa-gha-plan`, all clean |
+
+**What broke first:** the first apply
+([40352531264](https://github.com/jordann6/gcp-landing-zone/actions/runs/40352531264))
+failed at init with a 403 on `storage.objects.create` for
+`landing-zone/ci-proof/default.tfstate`. The GCS backend writes an empty state
+object the first time a root is initialized, and `sa-gha-plan` may now write
+only `.tflock` objects. That is the condition working, not a bug in it. A new
+CI root gets its state object seeded once by the operator:
+
+```bash
+terraform -chdir=ci-proof init \
+  -backend-config=impersonate_service_account=sa-terraform@<seed>.iam.gserviceaccount.com
+```
+
 Repo variables `GCP_WIF_PROVIDER`, `GCP_PLAN_SA`, and `GCP_APPLY_SA` come from
 the bootstrap outputs. The roots the TTL guard reads name the state bucket in
 their backend block, so a fresh `make bootstrap` (new seed suffix) means
