@@ -68,6 +68,10 @@ locals {
     "oslogin.googleapis.com",
     "osconfig.googleapis.com",
     "pubsub.googleapis.com",
+    # The secret rotator (rotation/) runs on Cloud Run inside the perimeter.
+    # Enabling it here also creates the Cloud Run service agent that network/
+    # grants the restricted subnet to.
+    "run.googleapis.com",
     "secretmanager.googleapis.com",
     "servicenetworking.googleapis.com",
     "serviceusage.googleapis.com",

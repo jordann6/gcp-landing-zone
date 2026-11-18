@@ -7,7 +7,9 @@ TF_IMG  ?= image
 TF_CMP  ?= compute
 TF_OBS  ?= observability
 TF_INC  ?= incident
-ROOTS   := $(TF_GOV) $(TF_IMG) $(TF_NET) $(TF_WORK) $(TF_CMP) $(TF_OBS) $(TF_INC)
+TF_ROT  ?= rotation
+TF_EDGE ?= edge
+ROOTS   := $(TF_GOV) $(TF_IMG) $(TF_NET) $(TF_WORK) $(TF_CMP) $(TF_OBS) $(TF_INC) $(TF_ROT) $(TF_EDGE)
 
 # Extra -var flags for the workload apply. The compute-baseline session uses
 # WORK_VARS='-var enable_ubuntu_node_pool=true -var enable_cross_region_replica=false'.
@@ -150,6 +152,40 @@ set-db-password: ## Set the app DB password in Cloud SQL and the empty Secret Ma
 test-secrets: ## Prove no secret in state, the rotation notification, and the stale-secret alert
 	scripts/test-secrets.sh
 
+.PHONY: deploy-rotation
+deploy-rotation: ## Rotation root (Cloud Run rotator inside the perimeter; about $$0). Run twice: identities first, then after build-rotator
+	terraform -chdir=$(TF_ROT) init -backend-config=backend.hcl -reconfigure
+	terraform -chdir=$(TF_ROT) apply
+
+.PHONY: build-rotator
+build-rotator: ## Build and push the rotator image to the workload apps repo, write rotation/image.auto.tfvars (needs docker)
+	scripts/build-rotator.sh
+
+.PHONY: test-rotation
+test-rotation: ## Prove a real scheduled rotation: new Cloud SQL password, new version, old versions disabled, app connects
+	scripts/test-rotation.sh
+
+.PHONY: test-rotator
+test-rotator: ## Unit tests for the rotator (stubbed APIs, no credentials)
+	python3 -m unittest tests.test_rotator
+
+.PHONY: test-failover
+test-failover: ## Cloud SQL HA failover under a write probe: client write outage, acked writes lost
+	scripts/test-failover.sh
+
+.PHONY: deploy-edge
+deploy-edge: ## Edge root (global address + Cloud Armor policy; HOURLY with the LB, about $$0.03/hr)
+	terraform -chdir=$(TF_EDGE) init -backend-config=backend.hcl -reconfigure
+	terraform -chdir=$(TF_EDGE) apply
+
+.PHONY: test-edge
+test-edge: ## Ingress -> global external ALB with Cloud Armor: 200, WAF 403s, rate-limit 429s, denials logged
+	scripts/test-edge.sh
+
+.PHONY: destroy-edge-lb
+destroy-edge-lb: ## Delete the Ingress and wait for the controller to remove the LB (before destroying edge or workload)
+	scripts/test-edge.sh --teardown
+
 .PHONY: test-observability
 test-observability: ## Force an ops alert end to end and report the incident
 	scripts/test-observability.sh
@@ -197,4 +233,5 @@ destroy-network: ## Tear down NAT, PSC, firewall policies, VPC-SC, probe
 
 .PHONY: destroy
 destroy: ## Tear everything down in order, then verify nothing hourly survives
-	bash scripts/destroy-session.sh "$(TF_OBS)" "$(TF_INC)" "$(TF_CMP)" "$(TF_WORK)" "$(TF_NET)" "$(TF_IMG)" "$(TF_GOV)"
+	-scripts/test-edge.sh --teardown
+	bash scripts/destroy-session.sh "$(TF_OBS)" "$(TF_INC)" "$(TF_ROT)" "$(TF_EDGE)" "$(TF_CMP)" "$(TF_WORK)" "$(TF_NET)" "$(TF_IMG)" "$(TF_GOV)"

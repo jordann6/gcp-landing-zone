@@ -1,0 +1,96 @@
+# Failover drill client: one new connection and one INSERT every ~250ms for
+# ${DURATION}s, through a Cloud SQL HA failover the test script triggers midway.
+#
+#   ok <seq> <t>   the INSERT committed (the server acknowledged it)
+#   err <seq> <t>  the connection or INSERT failed
+#
+# A new connection per write is deliberate: it measures what a real client
+# sees, including how long the private IP refuses connections while the
+# standby is promoted. At the end the job reads the table back and reports
+# every acknowledged seq that is missing, which is the write-loss check.
+# t is seconds from /proc/uptime (busybox date has no sub-second format).
+#
+# Rendered by scripts/test-failover.sh. Same identity, images and network path
+# as db-check: Workload Identity for the password, tier=app for the database.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: write-probe
+  namespace: app
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        tier: app
+    spec:
+      serviceAccountName: app
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: shared
+          emptyDir: { medium: Memory }
+        - name: tmp
+          emptyDir: {}
+      initContainers:
+        - name: fetch-secret
+          image: ${SDK_IMAGE}
+          command: ["sh", "-c"]
+          args:
+            - gcloud secrets versions access latest --secret=app-db-password --project=${PROJECT} > /shared/pw && echo fetched
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/gcloud }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: shared, mountPath: /shared }
+            - { name: tmp, mountPath: /tmp }
+      containers:
+        - name: probe
+          image: ${PG_IMAGE}
+          command: ["sh", "-c"]
+          args:
+            - |
+              export PGPASSWORD="$(cat /shared/pw)"
+              C="host=${DB_IP} dbname=app user=app sslmode=require connect_timeout=2"
+              now() { cut -d' ' -f1 /proc/uptime; }
+              psql "$C" -qAtc "create table if not exists failover_probe (run text, seq int, primary key (run, seq))" || { echo "setup failed"; exit 1; }
+              RUN="${RUN_ID}"
+              END=$(( $(cut -d. -f1 /proc/uptime) + ${DURATION} ))
+              SEQ=0
+              : > /tmp/acked
+              while [ "$(cut -d. -f1 /proc/uptime)" -lt "$END" ]; do
+                SEQ=$((SEQ + 1))
+                if psql "$C" -qAtc "insert into failover_probe values ('$RUN', $SEQ)" >/dev/null 2>&1; then
+                  echo "ok $SEQ $(now)"; echo "$SEQ" >> /tmp/acked
+                else
+                  echo "err $SEQ $(now)"
+                fi
+                sleep 0.25
+              done
+              # Read back with retries: the instance may still be settling.
+              for i in 1 2 3 4 5 6 7 8 9 10; do
+                psql "$C" -qAtc "select seq from failover_probe where run = '$RUN' order by seq" > /tmp/present 2>/dev/null && break
+                sleep 3
+              done
+              ACKED=$(wc -l < /tmp/acked | tr -d ' ')
+              PRESENT=$(grep -cxF -f /tmp/acked /tmp/present)
+              echo "summary acked=$ACKED present=$PRESENT lost=$((ACKED - PRESENT)) attempted=$SEQ"
+          env:
+            - { name: HOME, value: /tmp }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: shared, mountPath: /shared }
+            - { name: tmp, mountPath: /tmp }
