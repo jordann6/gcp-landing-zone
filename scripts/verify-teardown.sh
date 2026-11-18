@@ -15,7 +15,7 @@
 source "$(dirname "$0")/lib.sh"
 
 section "Terraform state"
-for root in observability incident rotation edge compute workload network image terraform; do
+for root in observability incident rotation slo edge compute workload network image terraform; do
 	if state="$(terraform -chdir="$ROOT/$root" state list 2>&1)"; then
 		N="$(printf '%s\n' "$state" | sed '/^$/d' | wc -l | tr -d ' ')"
 		[ "$N" = "0" ] && ok "$root/ state is empty" || bad "$root/ still tracks $N resources" "$state"

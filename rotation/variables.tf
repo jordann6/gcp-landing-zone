@@ -25,7 +25,7 @@ variable "region" {
 }
 
 variable "image" {
-  description = "Rotator image by digest (written to image.auto.tfvars by scripts/build-rotator.sh). Empty means only the identities exist."
+  description = "Rotator image by digest (written to image.auto.tfvars by scripts/build-run-image.sh rotation secret-rotator). Empty means only the identities exist."
   type        = string
   default     = ""
 }

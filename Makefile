@@ -9,7 +9,8 @@ TF_OBS  ?= observability
 TF_INC  ?= incident
 TF_ROT  ?= rotation
 TF_EDGE ?= edge
-ROOTS   := $(TF_GOV) $(TF_IMG) $(TF_NET) $(TF_WORK) $(TF_CMP) $(TF_OBS) $(TF_INC) $(TF_ROT) $(TF_EDGE)
+TF_SLO  ?= slo
+ROOTS   := $(TF_GOV) $(TF_IMG) $(TF_NET) $(TF_WORK) $(TF_CMP) $(TF_OBS) $(TF_INC) $(TF_ROT) $(TF_EDGE) $(TF_SLO)
 
 # Extra -var flags for the workload apply. The compute-baseline session uses
 # WORK_VARS='-var enable_ubuntu_node_pool=true -var enable_cross_region_replica=false'.
@@ -142,7 +143,7 @@ test-incident: ## Publish a sample finding and alerts to the topics; prove the h
 
 .PHONY: test-handler
 test-handler: ## Unit tests for the incident handler (stubbed APIs, no credentials)
-	python3 -m unittest tests.test_incident_handler
+	python3 -m unittest tests.test_incident_handler tests.test_handler_remediation
 
 .PHONY: set-db-password
 set-db-password: ## Set the app DB password in Cloud SQL and the empty Secret Manager shell, out of band (never in state)
@@ -159,7 +160,7 @@ deploy-rotation: ## Rotation root (Cloud Run rotator inside the perimeter; about
 
 .PHONY: build-rotator
 build-rotator: ## Build and push the rotator image to the workload apps repo, write rotation/image.auto.tfvars (needs docker)
-	scripts/build-rotator.sh
+	scripts/build-run-image.sh rotation secret-rotator
 
 .PHONY: test-rotation
 test-rotation: ## Prove a real scheduled rotation: new Cloud SQL password, new version, old versions disabled, app connects
@@ -185,6 +186,31 @@ test-edge: ## Ingress -> global external ALB with Cloud Armor: 200, WAF 403s, ra
 .PHONY: destroy-edge-lb
 destroy-edge-lb: ## Delete the Ingress and wait for the controller to remove the LB (before destroying edge or workload)
 	scripts/test-edge.sh --teardown
+
+.PHONY: deploy-slo
+deploy-slo: ## SLO root (orders-api on Cloud Run, request-based SLO, burn-rate pages; about $$0). Run twice: identities first, then after build-orders
+	terraform -chdir=$(TF_SLO) init -backend-config=backend.hcl -reconfigure
+	terraform -chdir=$(TF_SLO) apply
+
+.PHONY: build-orders
+build-orders: ## Build and push orders-api, write slo/image.auto.tfvars (needs docker)
+	scripts/build-run-image.sh slo orders-api
+
+.PHONY: test-slo
+test-slo: ## Steady load, then a 50% fault: the fast-burn page opens; fault removed, the page closes
+	scripts/test-slo.sh
+
+.PHONY: test-remediation
+test-remediation: ## Open a 0.0.0.0/0 firewall rule and a standing human editor; prove the handler reverts both (live mode)
+	scripts/test-remediation.sh
+
+.PHONY: test-self-heal
+test-self-heal: ## Scale the edge web Deployment to 0; prove the uptime alert fires and web_heal restores it
+	scripts/test-self-heal.sh
+
+.PHONY: finops-report
+finops-report: ## Cost by project/service/label, label coverage, anomalies, idle-resource recommendations
+	scripts/finops-report.sh
 
 .PHONY: test-observability
 test-observability: ## Force an ops alert end to end and report the incident
@@ -234,4 +260,4 @@ destroy-network: ## Tear down NAT, PSC, firewall policies, VPC-SC, probe
 .PHONY: destroy
 destroy: ## Tear everything down in order, then verify nothing hourly survives
 	-scripts/test-edge.sh --teardown
-	bash scripts/destroy-session.sh "$(TF_OBS)" "$(TF_INC)" "$(TF_ROT)" "$(TF_EDGE)" "$(TF_CMP)" "$(TF_WORK)" "$(TF_NET)" "$(TF_IMG)" "$(TF_GOV)"
+	bash scripts/destroy-session.sh "$(TF_OBS)" "$(TF_INC)" "$(TF_ROT)" "$(TF_SLO)" "$(TF_EDGE)" "$(TF_CMP)" "$(TF_WORK)" "$(TF_NET)" "$(TF_IMG)" "$(TF_GOV)"

@@ -13,7 +13,7 @@ on:
 # conftest.
 #
 # One static job per Terraform root, as in the AWS repo (governance, image,
-# network, workload, compute, observability, incident, rotation, edge), plus bootstrap and
+# network, workload, compute, observability, incident, rotation, edge, slo), plus bootstrap and
 # ci-proof.
 #
 # Policy: the shared conftest suite carries GCP rules as of v1.4.0
@@ -82,6 +82,12 @@ jobs:
     uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.4.0
     with:
       terraform_dir: edge
+      skip_policy: false
+
+  static_slo:
+    uses: jordann6/platform-guardrails/.github/workflows/tf-ci.yml@v1.4.0
+    with:
+      terraform_dir: slo
       skip_policy: false
 
   static_ci_proof:
@@ -192,6 +198,17 @@ jobs:
     secrets:
       INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
 
+  finops_slo:
+    uses: ./.github/workflows/finops-gate.yml
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      terraform_dir: slo
+      max_monthly_increase: "50"
+    secrets:
+      INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
+
   # This repo's own rules (policy/gcp_lz.rego) over every root, and the guard on
   # the guard: the violations fixture must FAIL, or the rules have gone vacuous.
   # A Rego rule whose first line stops matching the input returns no
@@ -210,7 +227,7 @@ jobs:
 
       - name: Roots pass the repo rules
         run: |
-          for d in bootstrap terraform image network workload compute observability incident rotation edge ci-proof; do
+          for d in bootstrap terraform image network workload compute observability incident rotation edge slo ci-proof; do
             echo "==> $d"
             conftest test --parser hcl2 --combine --policy policy \
               $(find "$d" -name '*.tf' -not -path '*/.terraform/*')

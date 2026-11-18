@@ -62,7 +62,43 @@ real path. `enable_scc_notifications`, `enable_scc_alerts` and
 - **Backup vault delete path** with a backup present. Not tested. The vault `bv-prod-sql` held no data sources and no backups (the SQL association is off), and the workload destroy plan includes the vault and plan with `ignore_backup_plan_references = true` and `force_delete = false`. A populated vault would block deletion for the 1-day enforced retention.
 - **`make test-workload`** has not been re-run since the database password
   moved out of Terraform.
-- **CI apply, destroy and TTL guard.** Written, inactive ([ADR-0001](adr/0001-pipeline-on-shared-guardrails.md)).
+- ~~**CI apply, destroy and TTL guard.**~~ Proven live after this record:
+  gated apply, gated destroy and the 4-root TTL guard ran on GitHub WIF (run
+  IDs in the README's Pipeline section).
+- **A real rotation** is now built (`rotation/`, ADR-0006) but not yet run
+  live. The same is true of the failover write probe, the edge, self-heal,
+  event remediation, the SLO and the FinOps views, all added 2026-11-18. See
+  the session below.
+
+## Session for the 2026-11-18 additions
+
+After the session above through `deploy-observability`, in this order. Every
+apply is a saved plan reviewed first.
+
+```sh
+make deploy                      # governance again: run API on app projects, budget topic output
+make deploy-network              # Cloud Run service agent on the restricted subnet
+make deploy-rotation             # identities
+make build-rotator
+make deploy-rotation             # service and push subscription
+make test-rotation
+make test-failover
+make deploy-edge
+make test-edge
+make deploy-slo                  # identities (slo/terraform.tfvars holds alert_email)
+make build-orders
+make deploy-slo
+make test-slo
+make deploy-incident             # with -var dry_run=false (new routes, roles, subscriptions)
+make deploy-observability        # with -var enable_incident_channel=true -var enable_edge_uptime=true
+make test-self-heal
+make test-remediation
+make finops-report               # after the one console step in bootstrap/finops.tf
+```
+
+`make destroy` now deletes the edge Ingress first and waits for the
+controller to remove the load balancer, then destroys observability, incident,
+rotation, slo, edge and the rest.
 
 ## Teardown
 

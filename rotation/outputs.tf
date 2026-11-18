@@ -1,5 +1,5 @@
 output "repository" {
-  description = "Repository scripts/build-rotator.sh pushes to (the workload's CMEK apps repo)."
+  description = "Repository scripts/build-run-image.sh rotation pushes to (the workload's CMEK apps repo)."
   value       = local.wl.apps_repository
 }
 

@@ -87,3 +87,15 @@ variable "github_apply_environments" {
   type        = list(string)
   default     = ["prod-apply", "destroy"]
 }
+
+variable "billing_export_location" {
+  description = "BigQuery location of the billing export and FinOps views. A multi-region gets the backfill of the current and previous month."
+  type        = string
+  default     = "US"
+}
+
+variable "enable_billing_views" {
+  description = "Create the FinOps views. Only after the console billing export has created its table (see finops.tf)."
+  type        = bool
+  default     = false
+}

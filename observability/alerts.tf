@@ -22,7 +22,7 @@ resource "google_monitoring_notification_channel" "ops" {
 # exist while the incident root is deployed, and it is destroyed after this one.
 
 locals {
-  incident_policies = ["gke-node-not-ready", "sql-instance-down"]
+  incident_policies = ["gke-node-not-ready", "sql-instance-down", "edge-uptime"]
 }
 
 resource "google_monitoring_notification_channel" "incident" {
@@ -220,6 +220,24 @@ locals {
       }
     },
     var.enable_incident_channel ? {
+      "budget-threshold" = {
+        description = "A billing budget crossed an actual or forecast threshold (incident/ /budget route)."
+        filter      = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.handler_event["budget-threshold"].name}\" AND resource.type=\"cloud_run_revision\""
+        aligner     = "ALIGN_SUM"
+        period      = "300s"
+        comparison  = "COMPARISON_GT"
+        threshold   = 0
+        duration    = "0s"
+      }
+      "remediation-applied" = {
+        description = "Event remediation changed a firewall rule or an IAM policy (incident/ /asset route, live mode)."
+        filter      = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.handler_event["remediation-applied"].name}\" AND resource.type=\"cloud_run_revision\""
+        aligner     = "ALIGN_SUM"
+        period      = "60s"
+        comparison  = "COMPARISON_GT"
+        threshold   = 0
+        duration    = "0s"
+      }
       "stale-secret" = {
         description = "A secret's newest enabled version is older than the limit (daily age check in incident/)."
         filter      = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.stale_secret[0].name}\" AND resource.type=\"cloud_run_revision\""
@@ -242,6 +260,27 @@ locals {
       }
     } : {},
   )
+}
+
+# Handler events beyond the stale-secret check, one counter each.
+resource "google_logging_metric" "handler_event" {
+  for_each = var.enable_incident_channel ? {
+    "budget-threshold"    = "jsonPayload.event=\"budget_threshold\""
+    "remediation-applied" = "jsonPayload.event=\"handled\" AND jsonPayload.action=~\"^remediate_\" AND jsonPayload.dry_run=false"
+  } : {}
+
+  project = local.logging_project
+  name    = "lz-${each.key}"
+  filter  = <<-EOT
+    resource.type="cloud_run_revision"
+    AND resource.labels.service_name="incident-handler"
+    AND ${each.value}
+  EOT
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+  }
 }
 
 resource "google_monitoring_alert_policy" "threshold" {

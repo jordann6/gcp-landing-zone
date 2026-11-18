@@ -59,3 +59,9 @@ variable "enable_incident_channel" {
   type        = bool
   default     = false
 }
+
+variable "enable_edge_uptime" {
+  description = "Uptime check on the edge's anycast IP and the lz-ops-edge-uptime alert (routed to the incident handler's web self-heal when enable_incident_channel is also true). Needs edge/ deployed and the Ingress serving."
+  type        = bool
+  default     = false
+}
