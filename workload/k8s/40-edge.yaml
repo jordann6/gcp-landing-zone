@@ -43,6 +43,10 @@ spec:
             limits: { memory: 128Mi }
           securityContext:
             allowPrivilegeEscalation: false
+            # nginx-unprivileged keeps its pid and temp paths under /tmp, the
+            # emptyDir below. Added after the 2026-11-18 live run (Trivy
+            # KSV-0014); verified locally with docker --read-only --tmpfs /tmp.
+            readOnlyRootFilesystem: true
             capabilities: { drop: [ALL] }
           volumeMounts:
             - { name: tmp, mountPath: /tmp }

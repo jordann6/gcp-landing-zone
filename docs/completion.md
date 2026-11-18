@@ -114,6 +114,12 @@ incident 37, observability 28.
     it, which crashed that run and left a test viewer grant behind; it was
     removed by hand and the run repeated.
 
+After the session, CI flagged two things the live run did not exercise: lock
+files generated on macOS carried no linux_amd64 hashes (fixed with `terraform
+providers lock`), and Trivy KSV-0014 on the edge web container. Its root
+filesystem is now read-only, verified locally with the same image under
+`docker --read-only --tmpfs /tmp`, not in a second live session.
+
 The firewall remediation also showed the retry path working: the first
 attempts hit `resource not ready` while the rule was still being created,
 returned 500, and Pub/Sub redelivered until the disable succeeded.

@@ -44,8 +44,8 @@ trap cleanup EXIT
 
 # Polls: Cloud Logging indexes entries a few seconds to a minute after they are written.
 hlog() {
-	local out="" i
-	for i in $(seq 1 12); do
+	local out=""
+	for _ in $(seq 1 12); do
 		out="$(gcloud logging read "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"incident-handler\" AND jsonPayload.event=\"handled\" AND jsonPayload.action=\"$1\" AND timestamp>=\"$2\"" --project="$LOGGING" --limit=1 --format=json 2>/dev/null | jq -c '.[0].jsonPayload // empty')"
 		[ -n "$out" ] && break
 		sleep 10
