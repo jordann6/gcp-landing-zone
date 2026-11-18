@@ -18,11 +18,19 @@ SEED="$(tfout bootstrap seed_project_id)"
 PW="$(openssl rand -hex 16)"
 TOKEN="$(gcloud auth print-access-token "$IMP" 2>/dev/null)"
 
-# The password goes in the request body on stdin, not argv.
-OP="$(printf '{"name":"app","password":"%s"}' "$PW" | curl -s -X PUT \
-	-H "Authorization: Bearer $TOKEN" -H "x-goog-user-project: $SEED" -H "Content-Type: application/json" \
-	"https://sqladmin.googleapis.com/sql/v1beta4/projects/$PROJECT/instances/$INSTANCE/users?name=app" -d @- | jq -r '.name // empty')"
-[ -n "$OP" ] || { echo "Cloud SQL rejected the password update" >&2; exit 1; }
+# The password goes in the request body on stdin, not argv. Create the user on
+# first run (workload/ does not manage it); update it on every run after.
+BASE="https://sqladmin.googleapis.com/sql/v1beta4/projects/$PROJECT/instances/$INSTANCE/users"
+sql_user() { # $1 = method, $2 = url
+	printf '{"name":"app","password":"%s"}' "$PW" | curl -s -X "$1" \
+		-H "Authorization: Bearer $TOKEN" -H "x-goog-user-project: $SEED" -H "Content-Type: application/json" "$2" -d @-
+}
+RESP="$(sql_user POST "$BASE")"
+OP="$(jq -r '.name // empty' <<<"$RESP")"
+if [ -z "$OP" ] && grep -qiE "already exists|ALREADY_EXISTS|409" <<<"$RESP"; then
+	OP="$(sql_user PUT "$BASE?name=app" | jq -r '.name // empty')"
+fi
+[ -n "$OP" ] || { echo "Cloud SQL rejected the user/password request: $(jq -r '.error.message // "unknown"' <<<"$RESP")" >&2; exit 1; }
 gcloud sql operations wait "$OP" --project="$PROJECT" --timeout=300 "$IMP" >/dev/null 2>&1 || { echo "password operation $OP did not finish" >&2; exit 1; }
 echo "Cloud SQL user app: password set"
 

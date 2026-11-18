@@ -44,8 +44,17 @@ ok "primary $DB in $Z1"
 kubectl -n app delete job write-probe --ignore-not-found >/dev/null 2>&1
 PROJECT="$PROJECT" DB_IP="$DB_IP" PG_IMAGE="$PG_IMAGE" SDK_IMAGE="$SDK_IMAGE" RUN_ID="$RUN_ID" DURATION="$DURATION" \
 	envsubst '${PROJECT} ${DB_IP} ${PG_IMAGE} ${SDK_IMAGE} ${RUN_ID} ${DURATION}' <"$K8S/30-write-probe.yaml" | kubectl apply -f - >/dev/null
-kubectl -n app wait --for=condition=ready pod -l job-name=write-probe --timeout=180s >/dev/null 2>&1 &&
+# The pod is created asynchronously by the Job controller, and kubectl wait on a
+# label selector fails at once when nothing matches yet. Wait for the pod to
+# exist, then for its main container to run (the first pull through the
+# registry cache can take a couple of minutes).
+SECONDS=0
+until kubectl -n app get pods -l job-name=write-probe -o name 2>/dev/null | grep -q . || [ "$SECONDS" -ge 60 ]; do sleep 3; done
+kubectl -n app wait --for=jsonpath='{.status.phase}'=Running pod -l job-name=write-probe --timeout=360s >/dev/null 2>&1 &&
 	ok "write probe running ($RUN_ID, ${DURATION}s)" || { bad "write probe did not start" "$(kubectl -n app logs job/write-probe --all-containers 2>&1 | tail -3)"; summary; exit 1; }
+# The probe needs a few committed writes before the failover means anything.
+SECONDS=0
+until kubectl -n app logs job/write-probe -c probe 2>/dev/null | grep -q '^ok ' || [ "$SECONDS" -ge 120 ]; do sleep 3; done
 
 section "Failover under write load"
 echo "        steady writes for ${LEAD}s, then failover"

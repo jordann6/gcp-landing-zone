@@ -10,6 +10,11 @@
 # every acknowledged seq that is missing, which is the write-loss check.
 # t is seconds from /proc/uptime (busybox date has no sub-second format).
 #
+# First live run (2026-11-18): without a per-write timeout the probe hung on the
+# INSERT in flight at the failover and never logged again. connect_timeout does
+# not cover an established connection, which is the failure an application
+# with no statement or socket timeout would have too.
+#
 # Rendered by scripts/test-failover.sh. Same identity, images and network path
 # as db-check: Workload Identity for the password, tier=app for the database.
 apiVersion: batch/v1
@@ -70,7 +75,10 @@ spec:
               : > /tmp/acked
               while [ "$(cut -d. -f1 /proc/uptime)" -lt "$END" ]; do
                 SEQ=$((SEQ + 1))
-                if psql "$C" -qAtc "insert into failover_probe values ('$RUN', $SEQ)" >/dev/null 2>&1; then
+                # connect_timeout only bounds opening a connection. An INSERT in
+                # flight when the primary goes away waits on TCP for minutes, so
+                # each write gets a hard 3s ceiling and counts as failed.
+                if timeout 3 psql "$C" -qAtc "insert into failover_probe values ('$RUN', $SEQ)" >/dev/null 2>&1; then
                   echo "ok $SEQ $(now)"; echo "$SEQ" >> /tmp/acked
                 else
                   echo "err $SEQ $(now)"
@@ -79,7 +87,7 @@ spec:
               done
               # Read back with retries: the instance may still be settling.
               for i in 1 2 3 4 5 6 7 8 9 10; do
-                psql "$C" -qAtc "select seq from failover_probe where run = '$RUN' order by seq" > /tmp/present 2>/dev/null && break
+                timeout 10 psql "$C" -qAtc "select seq from failover_probe where run = '$RUN' order by seq" > /tmp/present 2>/dev/null && break
                 sleep 3
               done
               ACKED=$(wc -l < /tmp/acked | tr -d ' ')

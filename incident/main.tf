@@ -180,7 +180,12 @@ resource "google_project_iam_custom_role" "web_heal" {
   role_id     = "lzIncidentWebHeal"
   title       = "Incident: heal the edge web Deployment"
   description = "Read the cluster endpoint and scale or restart one Deployment through IAM-authorized Kubernetes API calls."
+  # clusters.connect is what the DNS endpoint checks before a request reaches
+  # the API server; without it every call is a front-end 403 (seen live
+  # 2026-11-18). The deployment permissions are then checked by GKE's IAM
+  # authorizer.
   permissions = [
+    "container.clusters.connect",
     "container.clusters.get",
     "container.deployments.get",
     "container.deployments.update",

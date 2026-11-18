@@ -32,14 +32,29 @@ RULE="lz-drill-open-ssh-$(date +%s)"
 
 cleanup() {
 	gcloud compute firewall-rules delete "$RULE" --project="$HOST" --quiet >/dev/null 2>&1 || true
+	# Remove with the member exactly as IAM stores it (canonical casing).
+	local m
+	m="$(gcloud projects get-iam-policy "$APP" --format=json 2>/dev/null | jq -r --arg m "$OPERATOR" '[.bindings[]?.members[] | select(ascii_downcase == ($m | ascii_downcase))][0] // empty')"
+	[ -n "$m" ] || return 0
 	for role in roles/editor roles/viewer; do
-		gcloud projects remove-iam-policy-binding "$APP" --member="$OPERATOR" --role="$role" --condition=None >/dev/null 2>&1 || true
+		gcloud projects remove-iam-policy-binding "$APP" --member="$m" --role="$role" --condition=None >/dev/null 2>&1 || true
 	done
 }
 trap cleanup EXIT
 
-hlog() { gcloud logging read "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"incident-handler\" AND jsonPayload.event=\"handled\" AND jsonPayload.action=\"$1\" AND timestamp>=\"$2\"" --project="$LOGGING" --limit=1 --format=json 2>/dev/null | jq -c '.[0].jsonPayload // empty'; }
-has_binding() { gcloud projects get-iam-policy "$APP" --format=json 2>/dev/null | jq -e --arg r "$1" --arg m "$OPERATOR" '.bindings[]? | select(.role == $r and (.condition == null)) | .members | index($m)' >/dev/null; }
+# Polls: Cloud Logging indexes entries a few seconds to a minute after they are written.
+hlog() {
+	local out="" i
+	for i in $(seq 1 12); do
+		out="$(gcloud logging read "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"incident-handler\" AND jsonPayload.event=\"handled\" AND jsonPayload.action=\"$1\" AND timestamp>=\"$2\"" --project="$LOGGING" --limit=1 --format=json 2>/dev/null | jq -c '.[0].jsonPayload // empty')"
+		[ -n "$out" ] && break
+		sleep 10
+	done
+	printf '%s' "$out"
+}
+# IAM stores a user in the Google account's canonical casing, which need not
+# match gcloud's account name, so members compare case-insensitively.
+has_binding() { gcloud projects get-iam-policy "$APP" --format=json 2>/dev/null | jq -e --arg r "$1" --arg m "$OPERATOR" '[.bindings[]? | select(.role == $r and (.condition == null)) | .members[] | ascii_downcase] | index($m | ascii_downcase) != null' >/dev/null; }
 
 section "Firewall: 0.0.0.0/0 ingress"
 START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -22,7 +22,7 @@ PROJECT="$(jq -r .project <<<"$S")"
 REGION="$(jq -r .region <<<"$S")"
 URL="$(jq -r .uri <<<"$S")"
 SLO="$(jq -r .slo <<<"$S")"
-PAGE="$(jq -r .policies["fast-burn"] <<<"$S")"
+PAGE="$(jq -r '.policies["fast-burn"]' <<<"$S")"
 SEED="$(tfout bootstrap seed_project_id)"
 WORK="$(mktemp -d)"
 trap 'touch "$WORK/stop"; wait 2>/dev/null; rm -rf "$WORK"' EXIT

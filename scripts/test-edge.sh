@@ -90,11 +90,14 @@ C="$(code "http://$IP/?q=hello")"
 [ "$C" = "200" ] && ok "benign query -> 200 (no false positive)" || bad "benign query -> $C"
 
 section "Per-IP rate limit"
-LIMIT="$(gcloud compute security-policies describe "$POLICY" --project="$PROJECT" --format=json | jq -r '.rules[] | select(.priority == 2000) | .rateLimitOptions.rateLimitThreshold.count')"
+# gcloud returns this as an object or a one-element array depending on version.
+LIMIT="$(gcloud compute security-policies describe "$POLICY" --project="$PROJECT" --format=json 2>/dev/null |
+	jq -r '(if type == "array" then .[0] else . end).rules[] | select(.priority == 2000) | .rateLimitOptions.rateLimitThreshold.count')"
+[ -n "$LIMIT" ] && [ "$LIMIT" -gt 0 ] 2>/dev/null || { bad "could not read the rate limit from $POLICY"; LIMIT=0; }
 BURST=$((LIMIT * 3))
 CODES="$(for _ in $(seq 1 "$BURST"); do code "http://$IP/"; echo; done | sort | uniq -c | tr '\n' ' ')"
 N429="$(awk '{for (i = 1; i < NF; i += 2) if ($(i + 1) == "429") print $i}' <<<"$CODES")"
-[ "${N429:-0}" -gt 0 ] && ok "$BURST requests at a $LIMIT/min limit: $CODES" || bad "no 429 in a $BURST request burst ($CODES)"
+[ "$LIMIT" -gt 0 ] && [ "${N429:-0}" -gt 0 ] && ok "$BURST requests at a $LIMIT/min limit: $CODES" || bad "no 429 in a $BURST request burst ($CODES)"
 
 section "Denials logged with the enforcing rule"
 LOG=""
