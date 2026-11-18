@@ -104,11 +104,16 @@ secret rotation, and deleting a backup vault that holds backups. Details in
 [docs/completion.md](docs/completion.md) and
 [docs/compute-baseline.md](docs/compute-baseline.md).
 
-Added 2026-11-18 and not yet run live: a secret rotator, a failover write
-probe, a Cloud Armor edge, edge uptime with self-heal, event remediation, an
-SLO with burn-rate pages on Cloud Run, and FinOps cost views. Each has its proof
-script and unit tests (46 pass), and every root passes fmt, validate, the
-policy gate and Checkov. ADRs 0006 to 0009 record the decisions.
+Added and proven live 2026-11-18, in one session: a secret rotator
+(`test-rotation` 10/0, rotated 1s after the schedule), a failover write probe
+(`test-failover` 7/0, 14.5s client write outage, 0 of 723 acknowledged writes
+lost), a Cloud Armor edge (`test-edge` 11/0), edge uptime with self-heal
+(`test-self-heal` 8/0, healed 173s after the break and 10s after the alert), event remediation (`test-remediation` 9/0),
+an SLO with burn-rate pages on Cloud Run (page opened about 6m45s into a 50%
+fault, closed 447s after it was removed), and FinOps cost views over the live
+billing export. The session found 10 defects, all fixed; see
+[docs/completion.md](docs/completion.md#proof-2026-11-18). ADRs 0006 to 0009
+record the decisions.
 
 ## Full diagram
 
@@ -306,16 +311,17 @@ pass.
 | Sample SCC finding quarantines the management VM, then it is restored; GKE pool resized 2 to 3 and back | Incident handler (live mode) |
 | No secret value in any of 7 state objects; `SECRET_ROTATE` published; stale-secret alert opens | Secrets lifecycle |
 
-Added 2026-11-18, written and statically checked, **not yet proven live**:
+Added 2026-11-18, proven live the same day:
 
-| Check | Proves |
+| Check | Result |
 |---|---|
-| Scheduled `SECRET_ROTATE` makes the rotator set a new Cloud SQL password, add a version and disable the old ones; db-check connects with it; decoy events are skipped | Real rotation, no human step |
-| Write probe through a Cloud SQL failover reports the client write outage and 0 acknowledged writes lost | Failover as the application sees it |
-| 200 through the anycast IP; SQLi, XSS and traversal get 403; a burst gets 429; denials logged with the rule | Cloud Armor edge |
-| Web scaled to 0, uptime alert opens, handler scales it back, edge serves 200 with no human action | Uptime monitoring and self-heal |
-| A 0.0.0.0/0 firewall rule is disabled and a standing human editor removed, viewer left alone | Event remediation |
-| 50% fault opens the fast-burn page; removing it closes the page | SLO and burn rate |
+| Scheduled `SECRET_ROTATE` makes the rotator set a new Cloud SQL password, add a version and disable the old ones; db-check connects with it; decoy events are skipped | 10/0. Rotated 1s after the scheduled time in 0.8s; version 1 disabled; new password in none of 11 state objects |
+| Write probe through a Cloud SQL HA failover | 7/0. Zone c to f, operation 36s, client write outage 14.5s (50 failed attempts), 0 of 723 acknowledged writes lost |
+| 200 through the anycast IP; WAF probes; per-IP burst; denials logged | 11/0. SQLi, XSS, traversal 403; benign 200; 180 requests at 60/min gave 59 200 and 121 429; each denial logged with its rule |
+| Web scaled to 0, uptime alert opens, handler scales it back | 8/0. Edge down 12s after the break; uptime alert 163s; handler scaled app/web 0 to 2 and the edge served 200 at 173s, with no human action |
+| A 0.0.0.0/0 firewall rule and a standing human editor | 9/0. Rule disabled 22s after creation; editor removed 15s after the grant; viewer left alone; remediation page opened |
+| 50% fault on orders-api, then removed | Slow-burn ticket opened 4m41s in, fast-burn page 6m44s in (5m burn about 49x, 1h about 39x); page closed 447s after the fault was removed |
+| FinOps views over the billing export | Views built on the live export; September chargeback showed 6.4% of spend carrying a cost_center label; no idle-resource recommendations |
 
 ## Cost
 

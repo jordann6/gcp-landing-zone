@@ -65,10 +65,58 @@ real path. `enable_scc_notifications`, `enable_scc_alerts` and
 - ~~**CI apply, destroy and TTL guard.**~~ Proven live after this record:
   gated apply, gated destroy and the 4-root TTL guard ran on GitHub WIF (run
   IDs in the README's Pipeline section).
-- **A real rotation** is now built (`rotation/`, ADR-0006) but not yet run
-  live. The same is true of the failover write probe, the edge, self-heal,
-  event remediation, the SLO and the FinOps views, all added 2026-11-18. See
-  the session below.
+- ~~**A real rotation.**~~ Built and proven 2026-11-18 (`rotation/`,
+  ADR-0006), with the failover write probe, the edge, self-heal, event
+  remediation, the SLO and the FinOps views. See Proof, 2026-11-18.
+
+## Proof, 2026-11-18
+
+Deployed on a reduced footprint (no image bake, compute root or probe VM; those
+were proven 2026-10-06 and nothing added here needs them): bootstrap FinOps
+datasets, governance 184, network 43, workload 56, rotation 10, slo 8, edge 3,
+incident 37, observability 28.
+
+| Proof | Result |
+|---|---|
+| `make test-rotation` | 10 passed, 0 failed. Decoys skipped; rotated 1s after the scheduled time, 0.8s of work; exactly one enabled version; db-check connected over TLS with it; new value in none of 11 state objects |
+| `make test-failover` | 7 passed, 0 failed. us-central1-c to us-central1-f, operation 36s; client write outage 14.5s, 50 failed attempts; 0 of 723 acknowledged writes lost |
+| `make test-edge` | 11 passed, 0 failed. First 200 after 302s of programming; 403 for SQLi, XSS, LFI; benign 200; 59 x 200 and 121 x 429 from a 180-request burst at 60/min |
+| `make test-self-heal` | 8 passed, 0 failed. Edge down 12s after the break; `lz-ops-edge-uptime` opened at 163s; the handler scaled app/web 0 to 2 and the edge served 200 at 173s. The first run healed at 388s because the role lacked `container.clusters.connect` (below); this is the rerun with it in place |
+| `make test-remediation` | 9 passed, 0 failed. Open rule disabled 22s after creation; editor removed 15s after the grant; viewer kept; `lz-ops-remediation-applied` opened |
+| SLO | Fault revision served 17:03:55Z; slow-burn ticket 17:08:36Z; fast-burn page 17:10:39Z; fault removed 17:29:25Z; page closed 447s later under 2,165 clean requests. `test-slo.sh` itself was stopped by a quoting bug (below), so these times come from the Monitoring alerts API and the revision timestamps; the fixed script has not been re-run end to end |
+| FinOps | Console export enabled, table created within the hour, views applied, `make finops-report` ran on the backfill |
+
+### What the live run found
+
+1. **No `google_sql_user` without a password.** Cloud SQL for PostgreSQL
+   rejects a built-in user with no password, and this path had never been
+   applied since the password moved out of Terraform. The user is now created
+   by `set-db-password.sh`.
+2. **Cloud Run memory floor.** 256Mi is rejected with always-allocated CPU;
+   512Mi is the minimum.
+3. **`kubectl wait` on a Job's pod** fails at once if the pod does not exist
+   yet. The drill waits for the pod, then for Running.
+4. **A write in flight during failover hangs.** `connect_timeout` only bounds
+   opening a connection; the INSERT on a connection whose server went away
+   waited on TCP for over 10 minutes. Each write now has a 3s ceiling. An
+   application with no statement or socket timeout has the same failure.
+5. **`gcloud ... security-policies describe`** returned a one-element array.
+6. **Unquoted jq path** in `test-slo.sh` lost its inner quotes to the shell,
+   so the script polled for a policy with an empty name.
+7. **IAM member casing.** IAM stores a user in the account's canonical casing,
+   so a case-sensitive match reported the viewer grant as removed and could
+   not clean it up. Matches are case-insensitive now.
+8. **The GKE DNS endpoint needs `container.clusters.connect`.** Without it
+   every call is a front-end 403 before the API server sees it.
+9. **New log-based metrics** take up to 10 minutes before an alert policy can
+   reference them; a second apply creates the rest.
+10. **Process.** The remediation script was edited while a run was reading
+    it, which crashed that run and left a test viewer grant behind; it was
+    removed by hand and the run repeated.
+
+The firewall remediation also showed the retry path working: the first
+attempts hit `resource not ready` while the rule was still being created,
+returned 500, and Pub/Sub redelivered until the disable succeeded.
 
 ## Session for the 2026-11-18 additions
 

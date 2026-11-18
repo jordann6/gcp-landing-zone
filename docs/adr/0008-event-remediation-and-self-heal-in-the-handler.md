@@ -48,5 +48,7 @@ scales it back to its floor, or restarts it, with a 10-minute cooldown.
 - The handler's own change produces a new feed message, which finds nothing
   to fix and is skipped, so there is no loop.
 - The handler reaches the cluster over the public DNS endpoint, authorized by
-  IAM (`container.deployments.get` and `update`), with no kubeconfig or
-  Kubernetes secret.
+  IAM, with no kubeconfig or Kubernetes secret. The endpoint itself checks
+  `container.clusters.connect` before anything reaches the API server, and
+  `container.deployments.get` and `update` are checked after. The first live
+  run had only the latter and got a front-end 403 on every call.
