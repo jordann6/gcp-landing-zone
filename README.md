@@ -111,7 +111,7 @@ lost), a Cloud Armor edge (`test-edge` 11/0), edge uptime with self-heal
 (`test-self-heal` 8/0, healed 173s after the break and 10s after the alert), event remediation (`test-remediation` 9/0),
 an SLO with burn-rate pages on Cloud Run (page opened about 6m45s into a 50%
 fault, closed 447s after it was removed), and FinOps cost views over the live
-billing export. The session found 10 defects, all fixed; see
+billing export. The session found 11 issues, all fixed or documented; see
 [docs/completion.md](docs/completion.md#proof-2026-11-18). ADRs 0006 to 0009
 record the decisions.
 

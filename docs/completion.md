@@ -110,7 +110,18 @@ incident 37, observability 28.
    every call is a front-end 403 before the API server sees it.
 9. **New log-based metrics** take up to 10 minutes before an alert policy can
    reference them; a second apply creates the rest.
-10. **Process.** The remediation script was edited while a run was reading
+10. **Teardown waits on Cloud Run's subnet address.** Direct VPC egress makes
+    Cloud Run reserve a `serverless-ipv4-cloudrun-*` internal address on the
+    Shared VPC subnet, owned by the serverless control plane and not deletable
+    by anyone. It outlives the service, so the subnet delete and the Shared VPC
+    detach both fail until Google releases it. Nothing bills meanwhile (the
+    VPC, subnet, folders and empty projects are free). This run it took 42
+    minutes after the rotator was deleted. A side effect worth knowing: the
+    first, partial governance destroy had already removed most of its outputs,
+    so the network re-run could not read them and stopped, and the governance
+    destroy then deleted the host project with the VPC and subnet in it. The
+    three stale network state entries were removed with `terraform state rm`.
+11. **Process.** The remediation script was edited while a run was reading
     it, which crashed that run and left a test viewer grant behind; it was
     removed by hand and the run repeated.
 
@@ -123,6 +134,17 @@ filesystem is now read-only, verified locally with the same image under
 The firewall remediation also showed the retry path working: the first
 attempts hit `resource not ready` while the rule was still being created,
 returned 500, and Pub/Sub redelivered until the disable succeeded.
+
+### Teardown result (2026-11-18)
+
+`make destroy` removed observability 25, incident 37, rotation 10, slo 8,
+edge 3 and workload 56; the edge Ingress went first and the controller removed
+its load balancer in 5 seconds. Network and governance waited 42 minutes on the
+serverless address (defect 10), then governance removed 39. Final
+`verify-teardown.sh`: 14 passed, 0 failed. Every root's state is empty, only
+the seed project is ACTIVE, and Google's default org policies survived. The two
+projects unlinked for the project cap were relinked to billing. Standing
+footprint: the seed project, state bucket, and the FinOps datasets and views.
 
 ## Session for the 2026-11-18 additions
 
@@ -176,6 +198,11 @@ Known blockers, all seen in this build:
 - **Workforce pool** soft-deletes for 30 days.
 - **KMS key rings** cannot be deleted and cost nothing.
 - A failed apply makes a saved plan stale. Re-plan; never reuse a plan.
+- **Cloud Run's serverless address.** The rotator's Direct VPC egress leaves
+  a `serverless-ipv4-cloudrun-*` address on the restricted subnet after the
+  service is deleted. Until Google releases it, `network` and `terraform`
+  cannot finish. Wait, then run
+  `bash scripts/destroy-session.sh network terraform`.
 
 ## Verify and close out
 
