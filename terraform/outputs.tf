@@ -123,3 +123,8 @@ output "asset_history" {
     feeds        = [for f in google_cloud_asset_organization_feed.changes : f.feed_id]
   }
 }
+
+output "budget_topic" {
+  description = "Topic every billing budget publishes its notifications to (incident/ pushes it to the handler's /budget route)."
+  value       = google_pubsub_topic.budget.id
+}

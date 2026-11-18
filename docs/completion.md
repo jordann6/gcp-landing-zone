@@ -62,7 +62,119 @@ real path. `enable_scc_notifications`, `enable_scc_alerts` and
 - **Backup vault delete path** with a backup present. Not tested. The vault `bv-prod-sql` held no data sources and no backups (the SQL association is off), and the workload destroy plan includes the vault and plan with `ignore_backup_plan_references = true` and `force_delete = false`. A populated vault would block deletion for the 1-day enforced retention.
 - **`make test-workload`** has not been re-run since the database password
   moved out of Terraform.
-- **CI apply, destroy and TTL guard.** Written, inactive ([ADR-0001](adr/0001-pipeline-on-shared-guardrails.md)).
+- ~~**CI apply, destroy and TTL guard.**~~ Proven live after this record:
+  gated apply, gated destroy and the 4-root TTL guard ran on GitHub WIF (run
+  IDs in the README's Pipeline section).
+- ~~**A real rotation.**~~ Built and proven 2026-11-18 (`rotation/`,
+  ADR-0006), with the failover write probe, the edge, self-heal, event
+  remediation, the SLO and the FinOps views. See Proof, 2026-11-18.
+
+## Proof, 2026-11-18
+
+Deployed on a reduced footprint (no image bake, compute root or probe VM; those
+were proven 2026-10-06 and nothing added here needs them): bootstrap FinOps
+datasets, governance 184, network 43, workload 56, rotation 10, slo 8, edge 3,
+incident 37, observability 28.
+
+| Proof | Result |
+|---|---|
+| `make test-rotation` | 10 passed, 0 failed. Decoys skipped; rotated 1s after the scheduled time, 0.8s of work; exactly one enabled version; db-check connected over TLS with it; new value in none of 11 state objects |
+| `make test-failover` | 7 passed, 0 failed. us-central1-c to us-central1-f, operation 36s; client write outage 14.5s, 50 failed attempts; 0 of 723 acknowledged writes lost |
+| `make test-edge` | 11 passed, 0 failed. First 200 after 302s of programming; 403 for SQLi, XSS, LFI; benign 200; 59 x 200 and 121 x 429 from a 180-request burst at 60/min |
+| `make test-self-heal` | 8 passed, 0 failed. Edge down 12s after the break; `lz-ops-edge-uptime` opened at 163s; the handler scaled app/web 0 to 2 and the edge served 200 at 173s. The first run healed at 388s because the role lacked `container.clusters.connect` (below); this is the rerun with it in place |
+| `make test-remediation` | 9 passed, 0 failed. Open rule disabled 22s after creation; editor removed 15s after the grant; viewer kept; `lz-ops-remediation-applied` opened |
+| SLO | Fault revision served 17:03:55Z; slow-burn ticket 17:08:36Z; fast-burn page 17:10:39Z; fault removed 17:29:25Z; page closed 447s later under 2,165 clean requests. `test-slo.sh` itself was stopped by a quoting bug (below), so these times come from the Monitoring alerts API and the revision timestamps; the fixed script has not been re-run end to end |
+| FinOps | Console export enabled, table created within the hour, views applied, `make finops-report` ran on the backfill |
+
+### What the live run found
+
+1. **No `google_sql_user` without a password.** Cloud SQL for PostgreSQL
+   rejects a built-in user with no password, and this path had never been
+   applied since the password moved out of Terraform. The user is now created
+   by `set-db-password.sh`.
+2. **Cloud Run memory floor.** 256Mi is rejected with always-allocated CPU;
+   512Mi is the minimum.
+3. **`kubectl wait` on a Job's pod** fails at once if the pod does not exist
+   yet. The drill waits for the pod, then for Running.
+4. **A write in flight during failover hangs.** `connect_timeout` only bounds
+   opening a connection; the INSERT on a connection whose server went away
+   waited on TCP for over 10 minutes. Each write now has a 3s ceiling. An
+   application with no statement or socket timeout has the same failure.
+5. **`gcloud ... security-policies describe`** returned a one-element array.
+6. **Unquoted jq path** in `test-slo.sh` lost its inner quotes to the shell,
+   so the script polled for a policy with an empty name.
+7. **IAM member casing.** IAM stores a user in the account's canonical casing,
+   so a case-sensitive match reported the viewer grant as removed and could
+   not clean it up. Matches are case-insensitive now.
+8. **The GKE DNS endpoint needs `container.clusters.connect`.** Without it
+   every call is a front-end 403 before the API server sees it.
+9. **New log-based metrics** take up to 10 minutes before an alert policy can
+   reference them; a second apply creates the rest.
+10. **Teardown waits on Cloud Run's subnet address.** Direct VPC egress makes
+    Cloud Run reserve a `serverless-ipv4-cloudrun-*` internal address on the
+    Shared VPC subnet, owned by the serverless control plane and not deletable
+    by anyone. It outlives the service, so the subnet delete and the Shared VPC
+    detach both fail until Google releases it. Nothing bills meanwhile (the
+    VPC, subnet, folders and empty projects are free). This run it took 42
+    minutes after the rotator was deleted. A side effect worth knowing: the
+    first, partial governance destroy had already removed most of its outputs,
+    so the network re-run could not read them and stopped, and the governance
+    destroy then deleted the host project with the VPC and subnet in it. The
+    three stale network state entries were removed with `terraform state rm`.
+11. **Process.** The remediation script was edited while a run was reading
+    it, which crashed that run and left a test viewer grant behind; it was
+    removed by hand and the run repeated.
+
+After the session, CI flagged two things the live run did not exercise: lock
+files generated on macOS carried no linux_amd64 hashes (fixed with `terraform
+providers lock`), and Trivy KSV-0014 on the edge web container. Its root
+filesystem is now read-only, verified locally with the same image under
+`docker --read-only --tmpfs /tmp`, not in a second live session.
+
+The firewall remediation also showed the retry path working: the first
+attempts hit `resource not ready` while the rule was still being created,
+returned 500, and Pub/Sub redelivered until the disable succeeded.
+
+### Teardown result (2026-11-18)
+
+`make destroy` removed observability 25, incident 37, rotation 10, slo 8,
+edge 3 and workload 56; the edge Ingress went first and the controller removed
+its load balancer in 5 seconds. Network and governance waited 42 minutes on the
+serverless address (defect 10), then governance removed 39. Final
+`verify-teardown.sh`: 14 passed, 0 failed. Every root's state is empty, only
+the seed project is ACTIVE, and Google's default org policies survived. The two
+projects unlinked for the project cap were relinked to billing. Standing
+footprint: the seed project, state bucket, and the FinOps datasets and views.
+
+## Session for the 2026-11-18 additions
+
+After the session above through `deploy-observability`, in this order. Every
+apply is a saved plan reviewed first.
+
+```sh
+make deploy                      # governance again: run API on app projects, budget topic output
+make deploy-network              # Cloud Run service agent on the restricted subnet
+make deploy-rotation             # identities
+make build-rotator
+make deploy-rotation             # service and push subscription
+make test-rotation
+make test-failover
+make deploy-edge
+make test-edge
+make deploy-slo                  # identities (slo/terraform.tfvars holds alert_email)
+make build-orders
+make deploy-slo
+make test-slo
+make deploy-incident             # with -var dry_run=false (new routes, roles, subscriptions)
+make deploy-observability        # with -var enable_incident_channel=true -var enable_edge_uptime=true
+make test-self-heal
+make test-remediation
+make finops-report               # after the one console step in bootstrap/finops.tf
+```
+
+`make destroy` now deletes the edge Ingress first and waits for the
+controller to remove the load balancer, then destroys observability, incident,
+rotation, slo, edge and the rest.
 
 ## Teardown
 
@@ -86,6 +198,11 @@ Known blockers, all seen in this build:
 - **Workforce pool** soft-deletes for 30 days.
 - **KMS key rings** cannot be deleted and cost nothing.
 - A failed apply makes a saved plan stale. Re-plan; never reuse a plan.
+- **Cloud Run's serverless address.** The rotator's Direct VPC egress leaves
+  a `serverless-ipv4-cloudrun-*` address on the restricted subnet after the
+  service is deleted. Until Google releases it, `network` and `terraform`
+  cannot finish. Wait, then run
+  `bash scripts/destroy-session.sh network terraform`.
 
 ## Verify and close out
 

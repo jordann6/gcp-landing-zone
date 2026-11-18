@@ -3,7 +3,14 @@
 #   SCC finding   scc-findings topic ---push---> /scc  quarantine the mgmt VM
 #   Ops alert     Monitoring channel -> ops-alerts ---push---> /ops
 #                                                      GKE node pool resize,
-#                                                      Cloud SQL failover
+#                                                      Cloud SQL failover,
+#                                                      edge web self-heal
+#   Asset change  org asset feed -> asset-changes ---push---> /asset
+#                                                      disable a 0.0.0.0/0
+#                                                      firewall rule, strip a
+#                                                      standing human owner
+#   Budget        billing budgets -> budget-alerts ---push---> /budget
+#                                                      threshold -> page
 #
 # Private by construction. Ingress is INTERNAL_ONLY (Pub/Sub push is an allowed
 # internal source), the only invoker is the push identity, and nothing holds
@@ -27,6 +34,13 @@ locals {
   app_project     = local.app.project_id
   tag_value       = local.net.quarantine_tags[local.app.host]
   deploy          = var.image != ""
+
+  # Event remediation acts in this environment's app project and its Shared VPC
+  # hosts (where the VPC firewall rules live), nowhere else.
+  remediate = merge(
+    { app = { project_id = local.app_project, number = local.app.number } },
+    { for k, h in local.gov.host_projects : k => { project_id = h.project_id, number = h.number } if h.env == var.env },
+  )
 }
 
 # Every API this root touches is also enabled on the seed (bootstrap), which is
@@ -39,7 +53,11 @@ resource "google_project_service" "logging" {
     "run.googleapis.com",
     "secretmanager.googleapis.com",
     # Calls the handler makes bill to its own project, so the API it calls in the
-    # app project must be enabled here too.
+    # app project must be enabled here too. Seen live for sqladmin; the rest are
+    # enabled ahead of the remediation and self-heal routes for the same reason.
+    "cloudresourcemanager.googleapis.com",
+    "compute.googleapis.com",
+    "container.googleapis.com",
     "sqladmin.googleapis.com",
   ])
 
@@ -157,12 +175,60 @@ resource "google_project_iam_custom_role" "secret_age" {
   ]
 }
 
+resource "google_project_iam_custom_role" "web_heal" {
+  project     = local.app_project
+  role_id     = "lzIncidentWebHeal"
+  title       = "Incident: heal the edge web Deployment"
+  description = "Read the cluster endpoint and scale or restart one Deployment through IAM-authorized Kubernetes API calls."
+  # clusters.connect is what the DNS endpoint checks before a request reaches
+  # the API server; without it every call is a front-end 403 (seen live
+  # 2026-11-18). The deployment permissions are then checked by GKE's IAM
+  # authorizer.
+  permissions = [
+    "container.clusters.connect",
+    "container.clusters.get",
+    "container.deployments.get",
+    "container.deployments.update",
+  ]
+}
+
+# Event remediation, one custom role per project in scope. setIamPolicy is the
+# sharpest permission the handler holds: with it the handler could grant
+# itself anything in these projects. The code only ever removes primitive-role
+# human members, the mutating step is dry-run by default, and ADR-0008 records
+# the trade-off against an IAM deny policy.
+resource "google_project_iam_custom_role" "remediate" {
+  for_each = local.remediate
+
+  project     = each.value.project_id
+  role_id     = "lzIncidentRemediate"
+  title       = "Incident: event remediation"
+  description = "Disable an open VPC firewall rule; remove a standing human owner or editor."
+  permissions = [
+    "compute.firewalls.get",
+    "compute.firewalls.update",
+    "compute.globalOperations.get",
+    "compute.networks.updatePolicy",
+    "resourcemanager.projects.getIamPolicy",
+    "resourcemanager.projects.setIamPolicy",
+  ]
+}
+
+resource "google_project_iam_member" "remediate" {
+  for_each = local.remediate
+
+  project = each.value.project_id
+  role    = google_project_iam_custom_role.remediate[each.key].name
+  member  = google_service_account.incident.member
+}
+
 resource "google_project_iam_member" "incident" {
   for_each = {
     secret_age   = google_project_iam_custom_role.secret_age.name
     quarantine   = google_project_iam_custom_role.quarantine.name
     gke_resize   = google_project_iam_custom_role.gke_resize.name
     sql_failover = google_project_iam_custom_role.sql_failover.name
+    web_heal     = google_project_iam_custom_role.web_heal.name
   }
 
   project = local.app_project
@@ -273,11 +339,20 @@ resource "google_cloud_run_v2_service" "incident" {
         name  = "SQL_INSTANCE"
         value = local.wl.sql.primary
       }
+      env {
+        name  = "REMEDIATE_PROJECTS"
+        value = join(",", flatten([for p in values(local.remediate) : [p.project_id, tostring(p.number)]]))
+      }
+      env {
+        name  = "WEB_MIN_REPLICAS"
+        value = tostring(var.web_min_replicas)
+      }
     }
   }
 
   depends_on = [
     google_project_iam_member.incident,
+    google_project_iam_member.remediate,
     google_tags_tag_value_iam_member.incident,
   ]
 }
@@ -298,8 +373,10 @@ resource "google_cloud_run_v2_service_iam_member" "invoker" {
 
 locals {
   routes = {
-    scc = { topic = local.gov.findings_topic, path = "/scc" }
-    ops = { topic = google_pubsub_topic.ops_alerts.id, path = "/ops" }
+    scc    = { topic = local.gov.findings_topic, path = "/scc" }
+    ops    = { topic = google_pubsub_topic.ops_alerts.id, path = "/ops" }
+    asset  = { topic = local.gov.asset_history.topic, path = "/asset" }
+    budget = { topic = local.gov.budget_topic, path = "/budget" }
   }
 }
 

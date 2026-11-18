@@ -1,0 +1,115 @@
+# The edge's Kubernetes half: a web Deployment behind a GKE Ingress, which the
+# GKE controller turns into a global external Application Load Balancer.
+#
+#   Ingress        names the reserved global address (edge/)
+#   BackendConfig  attaches the Cloud Armor policy (edge/) and request logging
+#   Service        container-native NEG, so the LB sends to pod IPs directly
+#   NetworkPolicy  only the Google front-end ranges reach the web pods
+#
+# Rendered by scripts/test-edge.sh with ADDRESS_NAME, SECURITY_POLICY and
+# WEB_IMAGE (digest, attested, so Binary Authorization admits it).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: app
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: web }
+  template:
+    metadata:
+      labels: { app: web }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: web
+          image: ${WEB_IMAGE}
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            # nginx-unprivileged keeps its pid and temp paths under /tmp, the
+            # emptyDir below. Added after the 2026-11-18 live run (Trivy
+            # KSV-0014); verified locally with docker --read-only --tmpfs /tmp.
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: web
+  namespace: app
+spec:
+  securityPolicy:
+    name: ${SECURITY_POLICY}
+  logging:
+    enable: true
+    sampleRate: 1.0
+  healthCheck:
+    type: HTTP
+    requestPath: /
+    port: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: app
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"default": "web"}'
+spec:
+  type: ClusterIP
+  selector: { app: web }
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: app
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.global-static-ip-name: ${ADDRESS_NAME}
+spec:
+  defaultBackend:
+    service:
+      name: web
+      port: { number: 80 }
+---
+# The app namespace is default-deny (10-netpol.yaml). Load-balanced requests and
+# health checks both arrive from the Google front-end ranges.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-from-google-front-end
+  namespace: app
+spec:
+  podSelector:
+    matchLabels: { app: web }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: 35.191.0.0/16 }
+        - ipBlock: { cidr: 130.211.0.0/22 }
+      ports:
+        - { protocol: TCP, port: 8080 }

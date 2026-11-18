@@ -104,6 +104,17 @@ secret rotation, and deleting a backup vault that holds backups. Details in
 [docs/completion.md](docs/completion.md) and
 [docs/compute-baseline.md](docs/compute-baseline.md).
 
+Added and proven live 2026-11-18, in one session: a secret rotator
+(`test-rotation` 10/0, rotated 1s after the schedule), a failover write probe
+(`test-failover` 7/0, 14.5s client write outage, 0 of 723 acknowledged writes
+lost), a Cloud Armor edge (`test-edge` 11/0), edge uptime with self-heal
+(`test-self-heal` 8/0, healed 173s after the break and 10s after the alert), event remediation (`test-remediation` 9/0),
+an SLO with burn-rate pages on Cloud Run (page opened about 6m45s into a 50%
+fault, closed 447s after it was removed), and FinOps cost views over the live
+billing export. The session found 11 issues, all fixed or documented; see
+[docs/completion.md](docs/completion.md#proof-2026-11-18). ADRs 0006 to 0009
+record the decisions.
+
 ## Full diagram
 
 ![GCP landing zone full architecture](docs/architecture.png)
@@ -115,12 +126,17 @@ baseline. Read it top to bottom.
 
 | Root | What | Cost posture |
 |---|---|---|
-| `bootstrap/` | Seed project, state bucket, `sa-terraform`, GitHub WIF (`sa-gha-plan` and the gated `sa-gha-apply`). Runs as you, once | Pennies |
+| `bootstrap/` | Seed project, state bucket, `sa-terraform`, GitHub WIF (`sa-gha-plan` and the gated `sa-gha-apply`), the billing export dataset and FinOps views. Runs as you, once | Pennies |
 | `terraform/` | Governance: folders, project factory, org policy, custom constraints, workforce federation, PAM, org sinks, CMEK, SCC, budgets, org-admin and CIS alerts | Nearly free |
 | `network/` | Base + restricted Shared VPCs, Cloud NAT, hierarchical + network firewall policy, PSC + private DNS, hub, VPC-SC, probe VM | Hourly |
 | `image/` | Golden image supply: Artifact Registry remote repos over the Ubuntu archive, a bake VPC with no internet route, the bake identity, `compute.imageUser` for consuming projects | Pennies |
 | `workload/` | Paved road in `app-prod`: private GKE, Cloud SQL HA + DR replica, Secret Manager, Artifact Registry, Binary Authorization, backup vault | Hourly |
 | `compute/` | One hardened e2-micro management VM in `app-prod` (golden image, IAP + OS Login, no external IP) and a weekly OS Config patch deployment | Hourly |
+| `observability/` | Metrics scope, ops alert policies, the edge uptime check and its self-heal alert, handler-event alerts (budget threshold, remediation applied) | About $0 |
+| `incident/` | Private Cloud Run handler: SCC quarantine, ops runbooks (GKE resize, Cloud SQL failover, edge self-heal), event remediation from the asset feed, budget notifications | About $0 |
+| `rotation/` | Secret rotator on Cloud Run inside the perimeter (Direct VPC egress), pushed `SECRET_ROTATE` from the secret's topic | About $0 |
+| `edge/` | Reserved global address and Cloud Armor policy (WAF, per-IP throttle). The GKE Ingress in `workload/k8s/40-edge.yaml` builds the load balancer | Hourly while the LB exists |
+| `slo/` | orders-api on Cloud Run, a request-based 99% SLO, fast and slow multi-window burn-rate pages | About $0 |
 | `ci-proof/` | The root CI applies: a custom-mode VPC, one subnet, a deny-all ingress rule in the seed project. Proves the gated WIF path end to end | Free |
 
 `packer/` bakes the image the probe and management VMs boot from, with the
@@ -253,6 +269,14 @@ make test-asset-history   # IAM change in the CAI feed and BigQuery export
 make test-incident        # handler decision (dry-run) and quarantine (live)
 make test-secrets         # no secret in state, rotation notification, stale-secret alert
 make test-handler         # handler unit tests, no credentials
+make test-rotator         # rotator unit tests, no credentials
+make test-rotation        # a real scheduled rotation, end to end
+make test-failover        # Cloud SQL HA failover under a write probe
+make test-edge            # Cloud Armor in front of private GKE
+make test-self-heal       # edge scaled to zero, uptime alert, handler heals it
+make test-remediation     # open firewall rule and standing editor, both reverted
+make test-slo             # 50% fault on orders-api opens the fast-burn page
+make finops-report        # cost views, label coverage, anomalies, idle resources
 ```
 
 Every check prints PASS, FAIL, or SKIP, and a denial passes only if the error
@@ -287,6 +311,18 @@ pass.
 | Sample SCC finding quarantines the management VM, then it is restored; GKE pool resized 2 to 3 and back | Incident handler (live mode) |
 | No secret value in any of 7 state objects; `SECRET_ROTATE` published; stale-secret alert opens | Secrets lifecycle |
 
+Added 2026-11-18, proven live the same day:
+
+| Check | Result |
+|---|---|
+| Scheduled `SECRET_ROTATE` makes the rotator set a new Cloud SQL password, add a version and disable the old ones; db-check connects with it; decoy events are skipped | 10/0. Rotated 1s after the scheduled time in 0.8s; version 1 disabled; new password in none of 11 state objects |
+| Write probe through a Cloud SQL HA failover | 7/0. Zone c to f, operation 36s, client write outage 14.5s (50 failed attempts), 0 of 723 acknowledged writes lost |
+| 200 through the anycast IP; WAF probes; per-IP burst; denials logged | 11/0. SQLi, XSS, traversal 403; benign 200; 180 requests at 60/min gave 59 200 and 121 429; each denial logged with its rule |
+| Web scaled to 0, uptime alert opens, handler scales it back | 8/0. Edge down 12s after the break; uptime alert 163s; handler scaled app/web 0 to 2 and the edge served 200 at 173s, with no human action |
+| A 0.0.0.0/0 firewall rule and a standing human editor | 9/0. Rule disabled 22s after creation; editor removed 15s after the grant; viewer left alone; remediation page opened |
+| 50% fault on orders-api, then removed | Slow-burn ticket opened 4m41s in, fast-burn page 6m44s in (5m burn about 49x, 1h about 39x); page closed 447s after the fault was removed |
+| FinOps views over the billing export | Views built on the live export; September chargeback showed 6.4% of spend carrying a cost_center label; no idle-resource recommendations |
+
 ## Cost
 
 | | |
@@ -296,6 +332,8 @@ pass.
 | Workload, while up | Cloud SQL HA on 1 vCPU (about $0.13/hr), DR replica (about $0.07/hr), two e2-standard-2 nodes (about $0.20/hr). The zonal GKE management fee is covered by the free tier: about $0.40 to $0.50/hr |
 | Image, while up | Remote repo cache storage and a few image GB: pennies. The bake VM (e2-small) exists for about 15 minutes |
 | Compute, while up | e2-micro management VM: about $0.01/hr |
+| Edge, while up | Global forwarding rule and Cloud Armor policy with 5 rules, prorated: about $0.03/hr |
+| Rotation, incident, SLO | Cloud Run scaled to zero, requests in the free tier: about $0 |
 | Full session (about 3.5 hours) | About $2 to $5 |
 | After destroy | Under $0.50/mo (key rings cannot be deleted; empty ones are free) |
 
@@ -400,8 +438,12 @@ updating that bucket name in `ci-proof/`, `network/`, `workload/`, and
 - **A locked log bucket** and `delete_contents_on_destroy = false`.
 - **Cloud SQL client certificates** through the Auth Proxy or connectors, and
   IAM database authentication instead of a password.
-- **A secret rotator** subscribed to the rotation topic (the pattern in
-  `aws-secrets-lifecycle` and `azure-secrets-lifecycle`).
+- **Two alternating database users** for rotation, if a workload's connection
+  pools reconnect in bulk ([ADR-0006](docs/adr/0006-secret-rotator-inside-the-perimeter.md)).
+- **TLS at the edge** with a managed certificate on a real domain, and an IAM
+  deny policy against standing primitive roles alongside the remediation
+  ([ADR-0007](docs/adr/0007-edge-through-gke-ingress-and-cloud-armor.md),
+  [ADR-0008](docs/adr/0008-event-remediation-and-self-heal-in-the-handler.md)).
 - **An exception workflow** for org policy, since hardcoded overrides are where
   landing zones erode.
 - **Interconnect** in place of the HA VPN placeholder.

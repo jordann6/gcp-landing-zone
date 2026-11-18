@@ -4,12 +4,14 @@
 # its environment's subnet and nothing else in the host, which is the
 # least-privilege form of Shared VPC.
 #
-# Three identities per service project need the subnet, and missing any one of
+# Four identities per service project need the subnet, and missing any one of
 # them fails a different resource later with an error that does not mention
 # Shared VPC:
 #   the Google APIs service agent  managed instance groups (GKE node pools)
 #   the GKE service agent          the cluster itself
 #   the Compute default SA         plain VMs created in the service project
+#   the Cloud Run service agent    Direct VPC egress (the secret rotator),
+#                                  restricted tier only
 
 locals {
   app_subnet = {
@@ -22,11 +24,16 @@ locals {
   }
 
   app_subnet_members = merge([
-    for k, a in local.app_subnet : {
-      "${k}/cloudservices" = { app = k, member = "serviceAccount:${a.number}@cloudservices.gserviceaccount.com" }
-      "${k}/gke"           = { app = k, member = "serviceAccount:service-${a.number}@container-engine-robot.iam.gserviceaccount.com" }
-      "${k}/compute"       = { app = k, member = "serviceAccount:${a.number}-compute@developer.gserviceaccount.com" }
-    }
+    for k, a in local.app_subnet : merge(
+      {
+        "${k}/cloudservices" = { app = k, member = "serviceAccount:${a.number}@cloudservices.gserviceaccount.com" }
+        "${k}/gke"           = { app = k, member = "serviceAccount:service-${a.number}@container-engine-robot.iam.gserviceaccount.com" }
+        "${k}/compute"       = { app = k, member = "serviceAccount:${a.number}-compute@developer.gserviceaccount.com" }
+      },
+      a.restricted ? {
+        "${k}/run" = { app = k, member = "serviceAccount:service-${a.number}@serverless-robot-prod.iam.gserviceaccount.com" }
+      } : {},
+    )
   ]...)
 }
 

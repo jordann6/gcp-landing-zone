@@ -15,7 +15,7 @@
 source "$(dirname "$0")/lib.sh"
 
 section "Terraform state"
-for root in observability incident compute workload network image terraform; do
+for root in observability incident rotation slo edge compute workload network image terraform; do
 	if state="$(terraform -chdir="$ROOT/$root" state list 2>&1)"; then
 		N="$(printf '%s\n' "$state" | sed '/^$/d' | wc -l | tr -d ' ')"
 		[ "$N" = "0" ] && ok "$root/ state is empty" || bad "$root/ still tracks $N resources" "$state"
@@ -56,6 +56,16 @@ for p in $PROJECTS; do
 	check images gcloud compute images list --no-standard-images
 	check snapshots gcloud compute snapshots list
 	check addresses gcloud compute addresses list --filter='addressType=EXTERNAL'
+	# The edge's load balancer is built by the GKE Ingress controller, outside
+	# Terraform. A cluster destroyed before its Ingress leaves these behind.
+	check backend-services gcloud compute backend-services list
+	check url-maps gcloud compute url-maps list
+	check network-endpoint-groups gcloud compute network-endpoint-groups list
+	check security-policies gcloud compute security-policies list
+	if gcloud services list --enabled --project="$p" --filter='config.name=run.googleapis.com' \
+		--format='value(config.name)' 2>/dev/null | grep -q .; then
+		check run-services gcloud run services list
+	fi
 	check clusters gcloud container clusters list
 	# Not every project enables Artifact Registry, and listing against a
 	# disabled API errors rather than returning nothing.

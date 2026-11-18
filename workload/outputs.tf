@@ -50,3 +50,18 @@ output "backup_vault" {
   description = "Backup vault, or null."
   value       = one(google_backup_dr_backup_vault.sql[*].id)
 }
+
+output "apps_repository" {
+  description = "Standard repo for images this org builds (CMEK). The secret rotator image is pushed here."
+  value       = "${var.region}-docker.pkg.dev/${local.project}/${google_artifact_registry_repository.apps.repository_id}"
+}
+
+output "rotation_topic" {
+  description = "Pub/Sub topic Secret Manager publishes SECRET_ROTATE to."
+  value       = google_pubsub_topic.secret_rotation.id
+}
+
+output "vpc_key" {
+  description = "Network root key of the VPC this workload landed in."
+  value       = local.vpc_key
+}

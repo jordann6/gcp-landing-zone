@@ -232,16 +232,9 @@ resource "google_sql_database" "app" {
   name     = "app"
 }
 
-# The password is never in Terraform. This creates the user and nothing else;
-# scripts/set-db-password.sh sets the password in Cloud SQL and adds it to the
-# Secret Manager shell in one step, so the value exists only in those two
-# places, and the app reads it through Workload Identity (workload_identity.tf).
-resource "google_sql_user" "app" {
-  project  = local.project
-  instance = google_sql_database_instance.primary.name
-  name     = "app"
-
-  lifecycle {
-    ignore_changes = [password]
-  }
-}
+# No google_sql_user here. Cloud SQL for PostgreSQL rejects a built-in user
+# created without a password (seen live 2026-11-18), and any password Terraform
+# sends would sit in state. scripts/set-db-password.sh creates the user with its
+# first password and adds the same value to the Secret Manager shell, so the
+# value exists only in Cloud SQL and Secret Manager; the rotator (rotation/)
+# owns it from then on. The user is deleted with the instance.

@@ -64,3 +64,9 @@ variable "secret_max_age_days" {
   type        = number
   default     = 90
 }
+
+variable "web_min_replicas" {
+  description = "Floor the edge self-heal scales the web Deployment back to."
+  type        = number
+  default     = 2
+}

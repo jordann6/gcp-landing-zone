@@ -43,3 +43,13 @@ output "github_apply_service_account" {
   description = "Gated CI apply identity for the ci-proof root (gcp_apply_service_account)."
   value       = google_service_account.gha_apply.email
 }
+
+output "finops" {
+  description = "Billing export dataset, the table Google creates in it, and the views dataset (scripts/finops-report.sh)."
+  value = {
+    project        = google_project.seed.project_id
+    export_dataset = google_bigquery_dataset.billing_export.dataset_id
+    export_table   = "gcp_billing_export_v1_${replace(var.billing_account, "-", "_")}"
+    views_dataset  = google_bigquery_dataset.finops.dataset_id
+  }
+}

@@ -13,6 +13,17 @@ Two routes on one private Cloud Run service:
              node-not-ready resizes the node pool by one (bounded), Cloud SQL
              primary down fails the instance over.
 
+  POST /asset  a Cloud Asset Inventory feed change (event remediation). A VPC
+             firewall rule admitting 0.0.0.0/0 is disabled; a standing
+             roles/owner or roles/editor binding to a human (no IAM condition,
+             so not a PAM grant) is removed from the project.
+  POST /budget a Cloud Billing budget notification. Crossing an actual or
+             forecast threshold logs budget_threshold (ERROR), which a
+             log-based alert turns into a page.
+
+  /ops also maps the edge uptime check: when it fails, web_heal scales the web
+  Deployment back to its floor (or restarts it) through the GKE DNS endpoint.
+
 Every mutating step defaults to dry-run (DRY_RUN unset or anything but "false"):
 the handler reads, decides, and logs what it WOULD do. Malformed or ineligible
 messages are acknowledged (HTTP 200) and logged, never retried, so a bad message
@@ -42,7 +53,13 @@ SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
 OPS_ACTIONS = {
     "lz-ops-gke-node-not-ready": "gke_resize",
     "lz-ops-sql-instance-down": "sql_failover",
+    "lz-ops-edge-uptime": "web_heal",
 }
+
+PRIMITIVE_ROLES = ("roles/owner", "roles/editor")
+HUMAN_PREFIXES = ("user:", "group:", "domain:")
+# Rules the platform itself owns: GKE and the Ingress controller manage these.
+MANAGED_FIREWALL_PREFIXES = ("gke-", "k8s-", "k8s1-", "k8s2-")
 
 INSTANCE_RE = re.compile(
     r"^//compute\.googleapis\.com/projects/(?P<project>[^/]+)/zones/(?P<zone>[^/]+)/instances/(?P<name>[^/]+)$"
@@ -69,6 +86,12 @@ def config():
         # it stays a dry run unless this is "true", even when DRY_RUN is "false".
         "secret_max_age_days": int(os.environ.get("SECRET_MAX_AGE_DAYS", "90")),
         "sql_live": os.environ.get("SQL_FAILOVER_LIVE", "false").strip().lower() == "true",
+        # Event remediation acts only in these projects (ids or numbers).
+        "remediate_projects": [x for x in os.environ.get("REMEDIATE_PROJECTS", "").split(",") if x],
+        "web_namespace": os.environ.get("WEB_NAMESPACE", "app"),
+        "web_deployment": os.environ.get("WEB_DEPLOYMENT", "web"),
+        "web_min_replicas": int(os.environ.get("WEB_MIN_REPLICAS", "2")),
+        "web_heal_cooldown_s": int(os.environ.get("WEB_HEAL_COOLDOWN_SECONDS", "600")),
     }
 
 
@@ -282,6 +305,157 @@ def sql_failover(cfg, labels):
     return {"action": "sql_failover", "instance": cfg["sql_instance"], "dry_run": cfg["dry_run"] or not cfg["sql_live"]}
 
 
+# ---- self-heal: the edge uptime check -----------------------------------------
+
+
+def kube(cfg, method, path, **kw):
+    """Call the cluster's Kubernetes API through its DNS endpoint, authenticated
+    by the handler's own Google identity (GKE authorizes it through IAM)."""
+    if "kube_endpoint" not in cfg:
+        c = call(
+            "GET",
+            f"https://container.googleapis.com/v1/projects/{cfg['app_project']}/locations/{cfg['gke_location']}/clusters/{cfg['gke_cluster']}",
+        )
+        ep = (((c.get("controlPlaneEndpointsConfig") or {}).get("dnsEndpointConfig") or {}).get("endpoint"))
+        if not ep:
+            raise RuntimeError("cluster has no DNS endpoint")
+        cfg["kube_endpoint"] = ep
+    return call(method, f"https://{cfg['kube_endpoint']}{path}", **kw)
+
+
+def web_heal(cfg, labels):
+    ns, name = cfg["web_namespace"], cfg["web_deployment"]
+    path = f"/apis/apps/v1/namespaces/{ns}/deployments/{name}"
+    dep = kube(cfg, "GET", path)
+    ann = (dep.get("spec", {}).get("template", {}).get("metadata", {}).get("annotations") or {})
+    last = ann.get("lz.heal/at")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if last:
+        age = (now - datetime.datetime.fromisoformat(last.replace("Z", "+00:00"))).total_seconds()
+        if age < cfg["web_heal_cooldown_s"]:
+            raise Skip(f"healed {int(age)}s ago; cooldown {cfg['web_heal_cooldown_s']}s")
+    replicas = int(dep.get("spec", {}).get("replicas", 0))
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    patch = {"spec": {"template": {"metadata": {"annotations": {"lz.heal/at": stamp}}}}}
+    if replicas < cfg["web_min_replicas"]:
+        what = f"scale {ns}/{name} from {replicas} to {cfg['web_min_replicas']}"
+        patch["spec"]["replicas"] = cfg["web_min_replicas"]
+    else:
+        what = f"rolling restart of {ns}/{name} ({replicas} replicas)"
+    step(
+        cfg,
+        what,
+        lambda: kube(cfg, "PATCH", path, data=json.dumps(patch), headers={"Content-Type": "application/merge-patch+json"}),
+    )
+    return {"action": "web_heal", "did": what, "dry_run": cfg["dry_run"]}
+
+
+# ---- event remediation: the asset feed ----------------------------------------
+
+
+def project_of(name):
+    """//compute.googleapis.com/projects/P/... or //cloudresourcemanager.googleapis.com/projects/N."""
+    parts = name.split("/")
+    return parts[parts.index("projects") + 1] if "projects" in parts else ""
+
+
+def wait_global_op(project, op):
+    name = op.get("name")
+    if not name or op.get("status") == "DONE":
+        return op
+    done = call("POST", f"https://compute.googleapis.com/compute/v1/projects/{project}/global/operations/{name}/wait")
+    if done.get("error"):
+        raise RuntimeError(f"operation {name} failed: {done['error']}")
+    return done
+
+
+def open_firewall(cfg, asset):
+    data = (asset.get("resource") or {}).get("data") or {}
+    name = data.get("name", "")
+    if name.startswith(MANAGED_FIREWALL_PREFIXES):
+        raise Skip(f"firewall {name} is platform-managed")
+    if data.get("direction", "INGRESS") != "INGRESS" or data.get("disabled"):
+        raise Skip(f"firewall {name} is not an enabled ingress rule")
+    if "0.0.0.0/0" not in (data.get("sourceRanges") or []) or not data.get("allowed"):
+        raise Skip(f"firewall {name} does not admit 0.0.0.0/0")
+    project = project_of(asset.get("name", ""))
+    url = f"https://compute.googleapis.com/compute/v1/projects/{project}/global/firewalls/{name}"
+    what = f"disable firewall {name} in {project} (ingress from 0.0.0.0/0)"
+    step(cfg, what, lambda: wait_global_op(project, call("PATCH", url, json={"disabled": True})))
+    return {"action": "remediate_firewall", "project": project, "firewall": name, "dry_run": cfg["dry_run"]}
+
+
+def standing_admins(policy):
+    """(role, member) pairs: a primitive role held by a human with no condition.
+    PAM grants always carry an expiry condition, so they never match."""
+    out = set()
+    for b in (policy or {}).get("bindings", []):
+        if b.get("role") in PRIMITIVE_ROLES and not b.get("condition"):
+            out |= {(b["role"], m) for m in b.get("members", []) if m.startswith(HUMAN_PREFIXES)}
+    return out
+
+
+def standing_admin(cfg, asset, prior):
+    added = standing_admins(asset.get("iamPolicy")) - standing_admins((prior or {}).get("iamPolicy"))
+    if not added:
+        raise Skip("no new standing owner/editor grant to a human")
+    number = project_of(asset.get("name", ""))
+    base = f"https://cloudresourcemanager.googleapis.com/v3/projects/{number}"
+
+    def strip():
+        # Re-read with the etag so a concurrent change fails the write instead
+        # of being overwritten.
+        pol = call("POST", f"{base}:getIamPolicy", json={"options": {"requestedPolicyVersion": 3}})
+        for b in pol.get("bindings", []):
+            if b.get("role") in PRIMITIVE_ROLES and not b.get("condition"):
+                b["members"] = [m for m in b.get("members", []) if (b["role"], m) not in added]
+        pol["bindings"] = [b for b in pol.get("bindings", []) if b.get("members")]
+        return call("POST", f"{base}:setIamPolicy", json={"policy": pol, "updateMask": "bindings,etag"})
+
+    what = "remove " + ", ".join(f"{r} from {m}" for r, m in sorted(added)) + f" on projects/{number}"
+    step(cfg, what, strip)
+    return {"action": "remediate_iam", "project": number, "removed": sorted(f"{r} {m}" for r, m in added), "dry_run": cfg["dry_run"]}
+
+
+def asset_change(cfg, payload):
+    asset = payload.get("asset") or {}
+    if payload.get("deleted"):
+        raise Skip("asset deleted")
+    project = project_of(asset.get("name", ""))
+    if project not in cfg["remediate_projects"]:
+        raise Skip(f"project {project or '?'} is not in REMEDIATE_PROJECTS")
+    kind = asset.get("assetType", "")
+    if kind == "compute.googleapis.com/Firewall":
+        return open_firewall(cfg, asset)
+    if kind == "cloudresourcemanager.googleapis.com/Project" and asset.get("iamPolicy") is not None:
+        return standing_admin(cfg, asset, payload.get("priorAsset"))
+    raise Skip(f"no remediation for {kind or 'unknown asset type'}")
+
+
+# ---- FinOps: budget notifications ---------------------------------------------
+
+
+def budget(cfg, payload):
+    name = payload.get("budgetDisplayName", "?")
+    cost, amount = float(payload.get("costAmount", 0)), float(payload.get("budgetAmount", 0) or 0)
+    actual = payload.get("alertThresholdExceeded")
+    forecast = payload.get("forecastThresholdExceeded")
+    record = {
+        "budget": name,
+        "cost": round(cost, 2),
+        "budget_amount": amount,
+        "percent": round(100 * cost / amount, 1) if amount else None,
+        "currency": payload.get("currencyCode"),
+        "interval_start": payload.get("costIntervalStart"),
+    }
+    if actual is None and forecast is None:
+        log.warning(json.dumps({"event": "budget_update", **record}))
+        return {"action": "budget", "crossed": None, **record}
+    crossed = {"actual": actual, "forecast": forecast}
+    log.error(json.dumps({"event": "budget_threshold", "crossed": crossed, **record}))
+    return {"action": "budget", "crossed": crossed, **record}
+
+
 def ops(cfg, payload):
     inc = payload.get("incident") or {}
     if inc.get("state") != "open":
@@ -291,7 +465,7 @@ def ops(cfg, payload):
     if not action:
         raise Skip(f"no remediation mapped to policy {policy!r}")
     labels = (inc.get("resource") or {}).get("labels") or {}
-    out = {"gke_resize": gke_resize, "sql_failover": sql_failover}[action](cfg, labels)
+    out = {"gke_resize": gke_resize, "sql_failover": sql_failover, "web_heal": web_heal}[action](cfg, labels)
     return {**out, "incident_id": inc.get("incident_id")}
 
 
@@ -331,7 +505,13 @@ def secret_age(cfg, payload):
 
 
 # route -> (function, arrives as a Pub/Sub push envelope)
-ROUTES = {"/scc": (scc, True), "/ops": (ops, True), "/secret-age": (secret_age, False)}
+ROUTES = {
+    "/scc": (scc, True),
+    "/ops": (ops, True),
+    "/secret-age": (secret_age, False),
+    "/asset": (asset_change, True),
+    "/budget": (budget, True),
+}
 
 
 class Handler(BaseHTTPRequestHandler):
