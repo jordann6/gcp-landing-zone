@@ -16,9 +16,10 @@ from diagrams.gcp.compute import GKE, BinaryAuthorization, ComputeEngine, OSPatc
 from diagrams.gcp.database import SQL
 from diagrams.gcp.devtools import GCR, Scheduler
 from diagrams.gcp.management import Billing, Project
-from diagrams.gcp.network import DNS, NAT, VPN, FirewallRules, PrivateServiceConnect, VirtualPrivateCloud
+from diagrams.gcp.network import DNS, NAT, VPN, Armor, FirewallRules, LoadBalancing, PrivateServiceConnect, VirtualPrivateCloud
 from diagrams.gcp.operations import Logging, Monitoring
-from diagrams.gcp.security import IAP, KMS, AccessContextManager, Iam, ResourceManager, SCC, SecretManager
+from diagrams.gcp.security import IAP, KMS, AccessContextManager, CloudAssetInventory, Iam, ResourceManager, SCC, SecretManager
+from diagrams.onprem.client import Users
 
 GRAPH_ATTR = {
     "fontsize": "18",
@@ -42,7 +43,9 @@ with Diagram(
     direction="LR",
     graph_attr=GRAPH_ATTR,
 ):
-    seed = Project("seed\nstate + sa-terraform\n+ GitHub WIF")
+    with Cluster("seed (bootstrap root)"):
+        seed = Project("seed\nstate + sa-terraform\n+ GitHub WIF")
+        billing_bq = BigQuery("billing export\n+ FinOps views")
 
     with Cluster("Organization  (org policy + custom constraints + hierarchical firewall)"):
         org = ResourceManager("Org policy\ndeny at the root")
@@ -78,8 +81,21 @@ with Diagram(
         binauthz = BinaryAuthorization("Binary Authorization\nKMS attestor")
         registry = GCR("Artifact Registry\nremote cache of Docker Hub")
         sql = SQL("Cloud SQL PG HA\nprivate IP, CMEK\n+ us-east1 replica")
-        secret = SecretManager("DB secret\nCMEK + rotation")
+        secret = SecretManager("DB secret\nCMEK, 30d schedule")
         wkms = KMS("workload keys")
+
+    with Cluster("Rotation (rotation root, inside the perimeter)"):
+        rot_topic = PubSub("SECRET_ROTATE\npush")
+        rotator = Run("rotator\nDirect VPC egress")
+
+    with Cluster("Edge (edge root + GKE Ingress)"):
+        users = Users("clients")
+        armor = Armor("Cloud Armor\nWAF + 60/min throttle")
+        glb = LoadBalancing("global LB\nreserved anycast IP")
+
+    with Cluster("SLO (slo root)"):
+        orders = Run("orders\nCloud Run")
+        slo = Monitoring("availability SLO\nburn-rate page")
 
     with Cluster("Telemetry"):
         sink = Logging("2 org sinks\ninclude_children")
@@ -100,6 +116,8 @@ with Diagram(
         feed = PubSub("CAI feeds\nIAM, org policy,\nfirewall")
         ops = Monitoring("11 ops alerts")
         handler = Run("private handler\ndry-run default")
+        asset = CloudAssetInventory("org asset feed\nasset-changes")
+        uptime = Monitoring("edge uptime\nmulti-region checks")
         daily = Scheduler("secret-age\ndaily check")
 
     # Inheritance is the spine.
@@ -152,3 +170,21 @@ with Diagram(
     handler >> Edge(label="quarantine tag", **DENY) >> mgmt
     handler >> Edge(label="resize / failover", **FLOW) >> gke
     daily >> Edge(**FLOW) >> handler
+    topic >> Edge(label="budget", **FLOW, constraint="false") >> handler
+
+    # Added 2026-11-18: rotation, edge, self-heal, event remediation, SLO, FinOps.
+    secret >> Edge(label="schedule", **FLOW) >> rot_topic
+    rot_topic >> Edge(**FLOW) >> rotator
+    rotator >> Edge(label="new version", **FLOW, constraint="false") >> secret
+    rotator >> Edge(label="set password", **FLOW, constraint="false") >> sql
+    users >> Edge(**FLOW) >> glb
+    armor >> Edge(label="403 / 429", **DENY) >> glb
+    glb >> Edge(**FLOW) >> gke
+    uptime >> Edge(**FLOW) >> glb
+    uptime >> Edge(label="alert", **FLOW) >> handler
+    handler >> Edge(label="scale web back", **FLOW, constraint="false") >> gke
+    asset >> Edge(label="push", **FLOW) >> handler
+    handler >> Edge(label="disable 0.0.0.0/0 rule", **DENY, constraint="false") >> vpc
+    handler >> Edge(label="strip standing editor", **DENY, constraint="false") >> app
+    orders >> Edge(**FLOW) >> slo
+    budget >> Edge(label="export", style="dotted", constraint="false") >> billing_bq
