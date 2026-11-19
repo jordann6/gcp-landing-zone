@@ -93,14 +93,15 @@ denials, and was destroyed for under $0.20.
 
 ## Status
 
-every root was deployed live, proven, and destroyed in
+On 2026-10-06 every root was deployed live, proven, and destroyed in
 one session. Live results: `make test` 23 passed, 0 failed, 2 skipped; `make
 test-compute` 20/0; `make test-observability` 15/0; `make test-asset-history`
 9/0; `make test-incident` 15/0 dry-run and 24/0 live; `make test-secrets` 30/0;
 `make test-workload` 15/0 with the failover step skipped; and 22 handler unit
 tests. `make destroy` removed all seven roots (380 resources) with every state
-empty. Not proven: Cloud SQL failover through the incident handler, a real
-secret rotation, and deleting a backup vault that holds backups. Details in
+empty. Still not proven are Cloud SQL failover through the incident handler
+and deleting a backup vault that holds backups. A real secret rotation, open
+after that session, was proven on 2026-11-18 (below). Details in
 [docs/completion.md](docs/completion.md) and
 [docs/compute-baseline.md](docs/compute-baseline.md).
 
